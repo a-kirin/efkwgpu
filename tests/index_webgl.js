@@ -12,7 +12,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:20Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:24Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -52,6 +52,7 @@ function main() {
   const THREE = window.THREE
   const renderer = new THREE.WebGLRenderer({ canvas })
   renderer.setSize(canvas.width, canvas.height)
+  renderer.setClearColor(0xdbe2ea, 1)
   const clock = new THREE.Clock()
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(30.0, canvas.width / canvas.height, 1, 1000)
@@ -71,9 +72,17 @@ function main() {
   const effect = context.loadEffect(effectPath, 1.0, () => {
     logLine(`loadEffect ok: ${effectPath}`)
     const handle = context.play(effect)
-    handle.setLocation(0, 0, 0)
-    window.latestHandle = handle
-    setStatus('Play: blood.efkefc')
+    if (handle) {
+      handle.setLocation(0, 0, 0)
+      if (handle.setScale) {
+        handle.setScale(5, 5, 5)
+      }
+      window.latestHandle = handle
+      setStatus('Play: blood.efkefc')
+      logLine('handle created: ' + !!handle)
+    } else {
+      logLine('play returned null handle')
+    }
   }, (message, failedPath) => {
     logLine(`loadEffect error: ${message} ${failedPath || effectPath}`)
     setError(`loadEffect error: ${message}`)
@@ -88,7 +97,7 @@ function main() {
     context.setCameraMatrix(camera.matrixWorldInverse.elements)
     context.draw()
 
-    if (fastRenderMode) {
+    if (fastRenderMode && typeof renderer.resetState === 'function') {
       renderer.resetState()
     }
   }
