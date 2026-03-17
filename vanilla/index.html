@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Effekseer WebGPU Vanilla Reference</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #07101c;
+      }
+
+      #viewer-canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        background: #07101c;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewer-canvas"></canvas>
+    <script src="/effekseer-runtime/fflate.umd.js"></script>
+    <script src="/effekseer-runtime/Effekseer_WebGPU_Runtime.js"></script>
+    <script src="/effekseer-runtime/effekseer.webgpu.src.js"></script>
+    <script>
+      if (typeof effekseer !== 'undefined') {
+        window.effekseer = effekseer
+      }
+    </script>
+    <script type="module" src="/src/vanilla-main.ts"></script>
+  </body>
+</html>

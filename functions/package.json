@@ -1,0 +1,19 @@
+{
+  "name": "react-vite-ts-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "npm run build && firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
