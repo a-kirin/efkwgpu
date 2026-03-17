@@ -1,6 +1,7 @@
 ﻿const statusEl = document.getElementById('status')
 const errorEl = document.getElementById('error')
 const logEl = document.getElementById('log')
+const buttons = document.getElementById('buttons')
 
 const logLine = (message) => {
   const time = new Date().toISOString().split('T')[1]?.replace('Z', '') ?? ''
@@ -12,7 +13,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:30Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:40Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -62,12 +63,11 @@ function main() {
   const context = effekseer.createContext()
   context.init(renderer.getContext())
 
-  const fastRenderMode = true
+  const fastRenderMode = false
   if (fastRenderMode) {
     context.setRestorationOfStatesFlag(false)
   }
 
-  // Use packed effect to avoid missing dependencies.
   const effectPath = 'Resources/Arrow1.efkwg'
   logLine(`loadEffect: ${effectPath}`)
   const effect = context.loadEffect(effectPath, 1.0, () => {
@@ -93,6 +93,26 @@ function main() {
     logLine('loadEffect returned null')
   }
 
+  if (buttons) {
+    const btn = document.createElement('input')
+    btn.type = 'button'
+    btn.value = 'Arrow1.efkwg'
+    btn.id = 'Arrow1.efkwg'
+    btn.addEventListener('click', () => {
+      setStatus('Play: Arrow1.efkwg')
+      logLine('play: Arrow1.efkwg')
+      const handle = context.play(effect)
+      if (handle) {
+        handle.setLocation(0, 0, 0)
+        if (handle.setScale) {
+          handle.setScale(3, 3, 3)
+        }
+        window.latestHandle = handle
+      }
+    })
+    buttons.appendChild(btn)
+  }
+
   const renderLoop = () => {
     requestAnimationFrame(renderLoop)
 
@@ -101,10 +121,6 @@ function main() {
     context.setProjectionMatrix(camera.projectionMatrix.elements)
     context.setCameraMatrix(camera.matrixWorldInverse.elements)
     context.draw()
-
-    if (fastRenderMode && typeof renderer.resetState === 'function') {
-      renderer.resetState()
-    }
   }
 
   logLine('renderLoop start')
