@@ -13,7 +13,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:55Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:58Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -77,8 +77,11 @@ function main() {
     context.setRestorationOfStatesFlag(false)
   }
 
-  const effectPath = 'Resources/blood.efkefc'
+  const effectPath = '/tests/Resources/blood.efkefc'
   logLine(`loadEffect: ${effectPath}`)
+  fetch(effectPath)
+    .then((res) => logLine(`preflight: ${effectPath} status=${res.status}`))
+    .catch((err) => logLine(`preflight error: ${String(err)}`))
   let effectReady = false
   const effect = context.loadEffect(effectPath, 1.0, () => {
     effectReady = true
