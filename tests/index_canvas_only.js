@@ -1,3 +1,5 @@
+import bloodUrl from '../src/pkmoves/blood.efkwgpk?url'
+
 const statusEl = document.getElementById('status')
 const errorEl = document.getElementById('error')
 const logEl = document.getElementById('log')
@@ -99,12 +101,7 @@ window.callExists = function () {
 }
 
 const filePaths = [
-  'Resources/Arrow1.efkwg',
-  'Resources/Blow1.efkwg',
-  'Resources/Cure1.efkwg',
-  'Resources/Light.efkefc',
-  'Resources/ToonHit.efkefc',
-  'Resources/ToonWater.efkefc',
+  { name: 'blood.efkwgpk', path: bloodUrl },
 ]
 
 const canvas = document.getElementById('canvas')
@@ -218,8 +215,7 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
       window.addEventListener('resize', resize)
 
       const buttons = document.getElementById('buttons')
-      filePaths.forEach((path) => {
-        const name = path.substring(path.lastIndexOf('/') + 1)
+      filePaths.forEach(({ name, path }) => {
         logLine(`loadEffect: ${path}`)
         const effect = context.loadEffect(
           path,
