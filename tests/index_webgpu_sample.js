@@ -117,6 +117,7 @@ const main = async () => {
 
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: true })
   await renderer.init()
+  renderer.setClearColor(0x000000, 1)
   const device = renderer.backend?.device
   if (!device) {
     setStatus('WebGPU device not available.')
@@ -146,6 +147,7 @@ const main = async () => {
   }
 
   const scene = new THREE.Scene()
+  scene.background = new THREE.Color(0x000000)
   const camera = new THREE.PerspectiveCamera(30.0, canvas.width / canvas.height, 1, 1000)
   camera.position.set(20, 20, 20)
   camera.lookAt(new THREE.Vector3(0, 0, 0))
