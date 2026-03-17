@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <title>Effekseer WebGPU Canvas Only Test</title>
+  <style>
+    body {
+      margin: 12px;
+      font-family: Arial, sans-serif;
+      background: #dbe2ea;
+    }
+    #canvas {
+      background: #dbe2ea;
+      border: 1px solid #b7c0ca;
+    }
+    #status {
+      margin-top: 8px;
+      color: #1b5e20;
+    }
+    #error {
+      margin-top: 6px;
+      color: #b71c1c;
+      white-space: pre-wrap;
+    }
+    #log {
+      margin-top: 8px;
+      padding: 6px 8px;
+      border: 1px solid #c8d0d9;
+      background: #f4f6f9;
+      color: #111;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" width="320" height="240" class="screen" oncontextmenu="event.preventDefault()"></canvas>
+  <br>
+  <div id="buttons">
+    <input type="button" onclick="context && context.stopAll(); latestHandle = null;" value="stop" id="stop"></input>
+    <input type="button" onclick="callExists();" value="exists?"></input>
+    <input type="button" onclick="callEstimateBoundingBox();" value="callEstimateBoundingBox"></input>
+    <input type="button" onclick="window.step(5);" value="step" id="step"></input>
+  </div>
+  <div id="status"></div>
+  <div id="error"></div>
+  <div id="log"></div>
+
+  <script src="/effekseer-runtime/fflate.umd.js"></script>
+  <script src="/effekseer-runtime/Effekseer_WebGPU_Runtime.js"></script>
+  <script src="/effekseer-runtime/effekseer.webgpu.src.js"></script>
+  <script>
+    if (typeof effekseer !== 'undefined') {
+      window.effekseer = effekseer
+    }
+  </script>
+  <script type="module" src="./index_canvas_only.js"></script>
+</body>
+</html>
