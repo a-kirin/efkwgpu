@@ -13,7 +13,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:40Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:46Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -60,6 +60,15 @@ function main() {
   camera.position.set(20, 20, 20)
   camera.lookAt(new THREE.Vector3(0, 0, 0))
 
+  const grid = new THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
+  scene.add(grid)
+  const cube = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 2, 2),
+    new THREE.MeshBasicMaterial({ color: 0xff4444 })
+  )
+  cube.position.set(0, 1, 0)
+  scene.add(cube)
+
   const context = effekseer.createContext()
   context.init(renderer.getContext())
 
@@ -70,7 +79,9 @@ function main() {
 
   const effectPath = 'Resources/Arrow1.efkwg'
   logLine(`loadEffect: ${effectPath}`)
+  let effectReady = false
   const effect = context.loadEffect(effectPath, 1.0, () => {
+    effectReady = true
     logLine(`loadEffect ok: ${effectPath}`)
     const handle = context.play(effect)
     if (handle) {
@@ -99,6 +110,10 @@ function main() {
     btn.value = 'Arrow1.efkwg'
     btn.id = 'Arrow1.efkwg'
     btn.addEventListener('click', () => {
+      if (!effectReady) {
+        logLine('play blocked: effect not ready yet')
+        return
+      }
       setStatus('Play: Arrow1.efkwg')
       logLine('play: Arrow1.efkwg')
       const handle = context.play(effect)
@@ -108,6 +123,8 @@ function main() {
           handle.setScale(3, 3, 3)
         }
         window.latestHandle = handle
+      } else {
+        logLine('play returned null handle')
       }
     })
     buttons.appendChild(btn)
@@ -137,7 +154,9 @@ if (!window.effekseer) {
   logLine(`effekseer_native: ${typeof window.effekseer_native}`)
   logLine(`effekseerApi.loadEffect: ${typeof effekseer.loadEffect}`)
 
+  logLine('initRuntime: /effekseer-webgl/effekseer.wasm')
   effekseer.initRuntime('/effekseer-webgl/effekseer.wasm', () => {
+    logLine('initRuntime ok')
     effekseer.setLogEnabled?.(true)
     main()
   }, () => {
