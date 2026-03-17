@@ -12,7 +12,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:24Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:30Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -67,7 +67,8 @@ function main() {
     context.setRestorationOfStatesFlag(false)
   }
 
-  const effectPath = 'Resources/blood.efkefc'
+  // Use packed effect to avoid missing dependencies.
+  const effectPath = 'Resources/Arrow1.efkwg'
   logLine(`loadEffect: ${effectPath}`)
   const effect = context.loadEffect(effectPath, 1.0, () => {
     logLine(`loadEffect ok: ${effectPath}`)
@@ -75,11 +76,11 @@ function main() {
     if (handle) {
       handle.setLocation(0, 0, 0)
       if (handle.setScale) {
-        handle.setScale(5, 5, 5)
+        handle.setScale(3, 3, 3)
       }
       window.latestHandle = handle
-      setStatus('Play: blood.efkefc')
-      logLine('handle created: ' + !!handle)
+      setStatus('Play: Arrow1.efkwg')
+      logLine('handle created: true')
     } else {
       logLine('play returned null handle')
     }
@@ -87,6 +88,10 @@ function main() {
     logLine(`loadEffect error: ${message} ${failedPath || effectPath}`)
     setError(`loadEffect error: ${message}`)
   })
+
+  if (!effect) {
+    logLine('loadEffect returned null')
+  }
 
   const renderLoop = () => {
     requestAnimationFrame(renderLoop)
