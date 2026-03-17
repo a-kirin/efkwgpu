@@ -41,10 +41,7 @@ window.callExists = function () {
 const filePaths = [
   'Resources/Arrow1.efkwg',
   'Resources/Blow1.efkwg',
-  'Resources/Cure1.efkwg',
-  'Resources/Light.efkefc',
-  'Resources/ToonHit.efkefc',
-  'Resources/ToonWater.efkefc'
+  'Resources/Cure1.efkwg'
 ]
 
 const canvas = document.getElementById('canvas')

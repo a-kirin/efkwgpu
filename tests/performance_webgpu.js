@@ -122,9 +122,6 @@ if (!canvas) {
     'Resources/Arrow1.efkwg',
     'Resources/Blow1.efkwg',
     'Resources/Cure1.efkwg',
-    'Resources/Light.efkefc',
-    'Resources/ToonHit.efkefc',
-    'Resources/ToonWater.efkefc',
   ]
 
   renderContext.effects = []
