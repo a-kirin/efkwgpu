@@ -33,7 +33,10 @@ const pass = new EffekseerRenderPass(
   scene,
   camera,
   ctx,
-  { mode: 'composite' }
+  {
+    mode: 'composite',
+    idleOptimization: true,
+  }
 )
 
 const capabilities = pass.getCapabilities()
@@ -42,6 +45,10 @@ const capabilities = pass.getCapabilities()
 This mirrors the WebGL-side integration format by exposing a dedicated `EffekseerRenderPass` on the Three side while keeping the Effekseer context external.
 
 `mode` defaults to `'basic'`.
+`idleOptimization` defaults to `true`.
+
+When `idleOptimization` is enabled, the add-on skips Effekseer work when no
+active effects are detected and falls back to rendering the Three scene only.
 
 ## Modes
 
@@ -49,6 +56,21 @@ This mirrors the WebGL-side integration format by exposing a dedicated `Effeksee
 | --- | --- | --- | --- | --- | --- | --- |
 | `basic` | No | Yes | No | No | No | Effekseer is injected into the primary scene render pass. Lowest cost path. |
 | `composite` | Yes | Yes | No | No | No | Uses scene capture for background refraction, renders the scene again into a composite target, then presents through `PostProcessing`. |
+
+## Idle Optimization
+
+With `idleOptimization: true`:
+
+- `basic` keeps `renderer.render(scene, camera)` active, but skips
+  `effekseer.update(...)`, the external render pass hook, and `drawExternal(...)`
+  while idle.
+- `composite` falls back to `renderer.render(scene, camera)` while idle and
+  skips `effekseer.update(...)`, `sceneCaptureTrigger.render()`,
+  `compositePresenter.render(...)`, and the final presenter pass.
+
+The tracker watches handles returned by `ctx.playEffect(...)` and `ctx.play(...)`
+when available, and falls back to runtime metrics such as
+`getTotalParticleCount()` when the runtime exposes them.
 
 ## Unsupported Features
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu'
 import type { ExternalRenderPassHookInfo } from 'three/webgpu'
+import createEffekseerActivityTracker from './createEffekseerActivityTracker'
 import { syncEffekseerCamera, updateCameraProjection } from './common'
 import createCompositePassPresenter from './createCompositePassPresenter'
 import createFinalPassPresenter from './createFinalPassPresenter'
@@ -7,6 +8,7 @@ import type {
   ThreeEffekseerPass,
   ThreeEffekseerPassCapabilities,
   ThreeEffekseerPassInit,
+  ThreeEffekseerPassOptions,
 } from './types'
 import type {
   ThreeEffekseerFinalPassState,
@@ -105,9 +107,13 @@ function createFinalPassState(
 }
 
 export default function createCompositePass(
-  init: ThreeEffekseerPassInit
+  init: ThreeEffekseerPassInit,
+  options: ThreeEffekseerPassOptions = {}
 ): ThreeEffekseerPass {
   const { renderer, scene, camera, effekseer } = init
+  const tracker = options.idleOptimization === false
+    ? null
+    : createEffekseerActivityTracker(effekseer)
   const samples = Math.max(0, renderer.samples || 0)
   const capabilities: ThreeEffekseerPassCapabilities = {
     mode: 'composite',
@@ -165,20 +171,31 @@ export default function createCompositePass(
     },
 
     render(deltaFrames) {
-      syncEffekseerCamera(camera, effekseer)
-      effekseer.update(deltaFrames)
-      sceneCaptureTrigger.render()
-      scenePassResources.renderTarget = scenePass.renderTarget
-      scenePassResources.colorTexture = scenePass.renderTarget.texture
-      scenePassResources.depthTexture = scenePass.renderTarget.depthTexture
-      compositePresenter.render({
-        scenePassResources,
-        effekseer,
-      })
-      presenter.render(compositionTarget.texture)
+      const shouldRunEffekseer = tracker ? tracker.beforeFrame() : true
+      if (!shouldRunEffekseer) {
+        renderer.render(scene, camera)
+        return
+      }
+
+      try {
+        syncEffekseerCamera(camera, effekseer)
+        effekseer.update(deltaFrames)
+        sceneCaptureTrigger.render()
+        scenePassResources.renderTarget = scenePass.renderTarget
+        scenePassResources.colorTexture = scenePass.renderTarget.texture
+        scenePassResources.depthTexture = scenePass.renderTarget.depthTexture
+        compositePresenter.render({
+          scenePassResources,
+          effekseer,
+        })
+        presenter.render(compositionTarget.texture)
+      } finally {
+        tracker?.afterFrame()
+      }
     },
 
     dispose() {
+      tracker?.dispose()
       sceneCaptureTrigger.dispose()
       compositePresenter.dispose()
       presenter.dispose()

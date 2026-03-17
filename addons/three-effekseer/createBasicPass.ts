@@ -1,9 +1,11 @@
 import type { ExternalRenderPassHookInfo } from 'three/webgpu'
+import createEffekseerActivityTracker from './createEffekseerActivityTracker'
 import { syncEffekseerCamera, updateCameraProjection } from './common'
 import type {
   ThreeEffekseerPass,
   ThreeEffekseerPassCapabilities,
   ThreeEffekseerPassInit,
+  ThreeEffekseerPassOptions,
 } from './types'
 
 function isPrimaryScenePass(camera: ThreeEffekseerPassInit['camera'], info: ExternalRenderPassHookInfo): boolean {
@@ -11,9 +13,13 @@ function isPrimaryScenePass(camera: ThreeEffekseerPassInit['camera'], info: Exte
 }
 
 export default function createBasicPass(
-  init: ThreeEffekseerPassInit
+  init: ThreeEffekseerPassInit,
+  options: ThreeEffekseerPassOptions = {}
 ): ThreeEffekseerPass {
   const { renderer, scene, camera, effekseer } = init
+  const tracker = options.idleOptimization === false
+    ? null
+    : createEffekseerActivityTracker(effekseer)
   const capabilities: ThreeEffekseerPassCapabilities = {
     mode: 'basic',
     supportsDistortion: false,
@@ -35,6 +41,12 @@ export default function createBasicPass(
     },
 
     render(deltaFrames) {
+      const shouldRunEffekseer = tracker ? tracker.beforeFrame() : true
+      if (!shouldRunEffekseer) {
+        renderer.render(scene, camera)
+        return
+      }
+
       const previousHook = renderer.getExternalRenderPassHook()
 
       renderer.setExternalRenderPassHook((info: ExternalRenderPassHookInfo) => {
@@ -58,9 +70,12 @@ export default function createBasicPass(
         renderer.render(scene, camera)
       } finally {
         renderer.setExternalRenderPassHook(previousHook)
+        tracker?.afterFrame()
       }
     },
 
-    dispose() {},
+    dispose() {
+      tracker?.dispose()
+    },
   }
 }

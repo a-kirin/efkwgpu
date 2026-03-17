@@ -24,11 +24,14 @@ export type EffekseerExternalRenderPassState = {
 }
 
 export type EffekseerHandle = {
+  exists?: boolean
   stop(): void
   setLocation?(x: number, y: number, z: number): void
   setScale?(x: number, y: number, z: number): void
   setRotation?(x: number, y: number, z: number): void
   setMatrix?(matrixArray: ArrayLike<number>): void
+  setPaused?(paused: boolean): void
+  sendTrigger?(index: number): void
 }
 
 export type EffekseerContext = {
@@ -38,6 +41,7 @@ export type EffekseerContext = {
   preloadEffects(ids?: string[] | string): Promise<Map<string, unknown | null>>
   whenEffectsReady(ids?: string[] | string): Promise<Map<string, unknown | null>>
   playEffect(id: string, x?: number, y?: number, z?: number): EffekseerHandle | null
+  play?(effect: unknown, x?: number, y?: number, z?: number): EffekseerHandle | null
   update(deltaFrames?: number): void
   draw(): void
   drawExternal(
@@ -61,6 +65,9 @@ export type EffekseerContext = {
   ): void
   setProjectionMatrix(matrixArray: ArrayLike<number>): void
   setCameraMatrix(matrixArray: ArrayLike<number>): void
+  getTotalParticleCount?(): number
+  getDrawCallCount?(): number
+  getManagerProfileContainersDrawn?(): number
 }
 
 export type EffekseerApi = {

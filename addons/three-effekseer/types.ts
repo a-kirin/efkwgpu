@@ -13,6 +13,7 @@ export interface ThreeEffekseerPassInit {
 
 export interface ThreeEffekseerPassOptions {
   mode?: ThreeEffekseerPassMode
+  idleOptimization?: boolean
 }
 
 export interface ThreeEffekseerPassCapabilities {

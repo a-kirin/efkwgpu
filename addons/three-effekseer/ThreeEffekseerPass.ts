@@ -7,8 +7,8 @@ export default function createThreeEffekseerPass(
   options: ThreeEffekseerPassOptions = {}
 ): ThreeEffekseerPass {
   if (options.mode === 'composite') {
-    return createCompositePass(init)
+    return createCompositePass(init, options)
   }
 
-  return createBasicPass(init)
+  return createBasicPass(init, options)
 }
