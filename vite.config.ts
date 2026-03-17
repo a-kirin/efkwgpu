@@ -19,6 +19,14 @@ const EFFEKSEER_ROOT_DIR = fileURLToPath(
   new URL('../../../', import.meta.url)
 )
 
+const PROJECT_ROOT_DIR = fileURLToPath(
+  new URL('./', import.meta.url)
+)
+
+const TESTS_DIR = fileURLToPath(
+  new URL('./tests', import.meta.url)
+)
+
 const NATIVE_CONVERTER_CSPROJ = fileURLToPath(
   new URL('../../../Dev/Editor/EffekseerNativeConverter/EffekseerNativeConverter.csproj', import.meta.url)
 )
@@ -629,6 +637,31 @@ function effekseerRuntimePlugin() {
       for (const [urlPath, sourcePath] of EFFEKSEER_RUNTIME_FILES) {
         await copyFile(sourcePath, path.join(distRuntimeDir, path.basename(urlPath)))
       }
+
+      const copyDir = async (src: string, dest: string): Promise<void> => {
+        let entries: Array<import('node:fs').Dirent>
+        try {
+          entries = await readdir(src, { withFileTypes: true })
+        } catch {
+          return
+        }
+
+        await mkdir(dest, { recursive: true })
+
+        for (const entry of entries) {
+          const srcPath = path.join(src, entry.name)
+          const destPath = path.join(dest, entry.name)
+          if (entry.isDirectory()) {
+            await copyDir(srcPath, destPath)
+            continue
+          }
+          if (entry.isFile()) {
+            await copyFile(srcPath, destPath)
+          }
+        }
+      }
+
+      await copyDir(path.join(TESTS_DIR, 'Resources'), path.join(process.cwd(), 'dist', 'tests', 'Resources'))
     },
   }
 }
@@ -649,7 +682,7 @@ export default defineConfig({
   },
   server: {
     fs: {
-      allow: [EFFEKSEER_RUNTIME_DIR],
+      allow: [PROJECT_ROOT_DIR, EFFEKSEER_RUNTIME_DIR, TESTS_DIR],
     },
   },
   build: {
@@ -658,6 +691,10 @@ export default defineConfig({
         app: fileURLToPath(new URL('./index.html', import.meta.url)),
         vanilla: fileURLToPath(new URL('./vanilla/index.html', import.meta.url)),
         canvasOnly: fileURLToPath(new URL('./canvas-only/index.html', import.meta.url)),
+        testsIndexWebgpu: fileURLToPath(new URL('./tests/index_webgpu.html', import.meta.url)),
+        testsPerformanceWebgpu: fileURLToPath(new URL('./tests/performance_webgpu.html', import.meta.url)),
+        testsPostProcessingWebgpu: fileURLToPath(new URL('./tests/post_processing_threejs_webgpu.html', import.meta.url)),
+        testsPremultipliedWebgpu: fileURLToPath(new URL('./tests/premultiplied_alpha_webgpu.html', import.meta.url)),
       },
     },
   },
