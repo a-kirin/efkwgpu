@@ -106,6 +106,23 @@ const filePaths = [
 
 const canvas = document.getElementById('canvas')
 const effekseerApi = window.effekseer
+const buttons = document.getElementById('buttons')
+const effectButtons = new Map()
+
+if (buttons) {
+  filePaths.forEach(({ name }) => {
+    const btn = document.createElement('input')
+    btn.type = 'button'
+    btn.value = name
+    btn.id = name
+    btn.disabled = true
+    btn.addEventListener('click', () => {
+      setStatus(`"${name}" aún no está listo`)
+    })
+    buttons.appendChild(btn)
+    effectButtons.set(name, btn)
+  })
+}
 
 if (!canvas || !effekseerApi) {
   logLine(`canvas: ${!!canvas}, effekseerApi: ${!!effekseerApi}`)
@@ -261,7 +278,6 @@ if (!canvas || !effekseerApi) {
       resize()
       window.addEventListener('resize', resize)
 
-      const buttons = document.getElementById('buttons')
       filePaths.forEach(({ name, path }) => {
         logLine(`loadEffect: ${path}`)
         const effect = effekseerApi.loadEffect(path, 1.0, () => {
@@ -270,16 +286,26 @@ if (!canvas || !effekseerApi) {
           logLine(`loadEffect error: ${message} ${failedPath || path}`)
         })
         effects[name] = effect
-        const btn = document.createElement('input')
-        btn.type = 'button'
-        btn.value = name
-        btn.id = name
-        btn.addEventListener('click', () => {
+        const btn = effectButtons.get(name)
+        if (btn) {
+          btn.disabled = false
+          btn.addEventListener('click', () => {
+            setStatus('Play: ' + name)
+            logLine(`play: ${name}`)
+            window.latestHandle = effekseerApi.play(effect, 0, 0, 0)
+          })
+        } else if (buttons) {
+          const newBtn = document.createElement('input')
+          newBtn.type = 'button'
+          newBtn.value = name
+          newBtn.id = name
+          newBtn.addEventListener('click', () => {
           setStatus('Play: ' + name)
           logLine(`play: ${name}`)
           window.latestHandle = effekseerApi.play(effect, 0, 0, 0)
-        })
-        buttons.appendChild(btn)
+          })
+          buttons.appendChild(newBtn)
+        }
       })
 
       setStatus('WebGL runtime listo.')
