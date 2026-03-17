@@ -68,11 +68,13 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
 
   const clock = new THREE.Clock()
   const scene = new THREE.Scene()
+  scene.background = new THREE.Color('#ffffff')
   const camera = new THREE.PerspectiveCamera(30.0, canvas.width / canvas.height, 1, 1000)
   camera.position.set(20, 20, 20)
   camera.lookAt(new THREE.Vector3(0, 0, 0))
 
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: true })
+  renderer.setClearColor(0xffffff, 1)
 
   const effects = {}
   let pass = null
