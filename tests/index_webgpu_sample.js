@@ -106,7 +106,7 @@ const main = async () => {
 
   bindButtons()
 
-  const renderer = new THREE.WebGPURenderer({ canvas, antialias: true })
+  const renderer = new THREE.WebGPURenderer({ canvas, antialias: false })
   await renderer.init()
   renderer.setClearColor(0x000000, 1)
   const device = renderer.backend?.device
