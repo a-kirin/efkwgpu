@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Effekseer WebGPU Sample (No Three)</title>
+    <style>
+      body {
+        font-family: sans-serif;
+      }
+      #log {
+        white-space: pre;
+        background: #111;
+        color: #d7f5d7;
+        padding: 8px;
+        height: 140px;
+        overflow: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" width="720" height="480" class="screen"></canvas>
+    <br />
+    <div id="buttons">
+      <input type="button" data-effect="Arrow1" value="Arrow1" />
+      <input type="button" data-effect="Blow1" value="Blow1" />
+      <input type="button" data-effect="Cure1" value="Cure1" />
+      <input type="button" data-action="stop" value="stop" />
+    </div>
+    <br />
+    <div>
+      <p>Position</p>
+      <input id="posx" type="number" value="0" />
+      <input id="posy" type="number" value="0" />
+      <input id="posz" type="number" value="0" />
+    </div>
+    <div>
+      <p>Rotation</p>
+      <input id="rotx" type="number" value="0" />
+      <input id="roty" type="number" value="0" />
+      <input id="rotz" type="number" value="0" />
+    </div>
+    <br />
+    <div id="status"></div>
+    <div id="cpu"></div>
+    <div id="log"></div>
+    <script src="/effekseer-runtime/fflate.umd.js"></script>
+    <script src="/effekseer-runtime/Effekseer_WebGPU_Runtime.js"></script>
+    <script src="/effekseer-runtime/effekseer.webgpu.src.js"></script>
+    <script>
+      if (typeof effekseer !== 'undefined') {
+        window.effekseer = effekseer
+      }
+    </script>
+    <script type="module" src="./index_webgpu_sample_no_three.js"></script>
+  </body>
+</html>

@@ -45,6 +45,8 @@ type ExtendedEffekseerContext = EffekseerContext & {
   ) => ExtendedEffekseerEffect | null
   releaseEffect?: (effect: ExtendedEffekseerEffect | null) => void
   play?: (effect: ExtendedEffekseerEffect | null, x?: number, y?: number, z?: number) => ExtendedEffekseerHandle | null
+  getUpdateTime?: () => number
+  getDrawTime?: () => number
 }
 
 type ExtendedEffekseerHandle = EffekseerHandle & {
@@ -131,6 +133,7 @@ const SAMPLE_EFFECTS: SampleEffect[] = [
 const BUILTIN_IDS = SAMPLE_EFFECTS.map((effect) => effect.id)
 const TRIGGER_INDICES = [0, 1, 2, 3] as const
 const CONVERTED_PREVIEW_SCALE = 1
+const DEBUG_EFFEKSEER_PASS = true
 const SAMPLE_LOOKUP = new Map(SAMPLE_EFFECTS.map((effect) => [effect.id, effect]))
 const BUILTIN_REGISTRY = Object.fromEntries(
   SAMPLE_EFFECTS.map((effect) => [
@@ -267,6 +270,7 @@ export default function EffekseerConverterCanvas() {
   const [showSceneCube, setShowSceneCube] = useState(false)
   const [showGrid, setShowGrid] = useState(true)
   const [showStats, setShowStats] = useState(false)
+  const [cpuStatus, setCpuStatus] = useState('')
   const [bgColor, setBgColor] = useState('#111113')
   const [gridColor, setGridColor] = useState('#ffffff')
   const [showConvertedList, setShowConvertedList] = useState(true)
@@ -284,6 +288,22 @@ export default function EffekseerConverterCanvas() {
 
   const useNativeConverter = true
   const injectMeshNative = true
+  const showStatsRef = useRef(showStats)
+  const cpuStatsRef = useRef({
+    accumMs: 0,
+    frames: 0,
+    stamp: performance.now(),
+    lastAvgMs: null as number | null,
+    lastUiUpdate: 0,
+    lastText: '',
+  })
+
+  useEffect(() => {
+    showStatsRef.current = showStats
+    if (!showStats) {
+      setCpuStatus('')
+    }
+  }, [showStats])
 
   const appendLog = useCallback((message: string) => {
     if (!message) return
@@ -552,6 +572,7 @@ export default function EffekseerConverterCanvas() {
 
     let cancelled = false
     let frame = 0
+    let renderFrame = 0
     const timer = new THREE.Timer()
     timer.connect(document)
 
@@ -615,7 +636,8 @@ export default function EffekseerConverterCanvas() {
       if (!pass) return
 
       const handle = runtimeRef.current.handle
-      if (handle && !isHandleAlive(handle)) {
+      const handleAlive = isHandleAlive(handle)
+      if (handle && !handleAlive) {
         runtimeRef.current.handle = null
         setPlayback((prev) => (prev === 'stopped' ? prev : 'stopped'))
       }
@@ -626,7 +648,52 @@ export default function EffekseerConverterCanvas() {
         cube.rotation.z += 0.01
       }
       controls.update()
-      pass.render(Math.max(0, timer.getDelta() * 60))
+      if (handleAlive) {
+        pass.render(Math.max(0, timer.getDelta() * 60))
+        if (DEBUG_EFFEKSEER_PASS) {
+          renderFrame += 1
+          console.log(`[EffekseerConverter] frame=${renderFrame} effekseer pass=sent`)
+        }
+        if (showStatsRef.current) {
+          const ctx = runtimeRef.current.ctx
+          const updateUs = ctx?.getUpdateTime ? ctx.getUpdateTime() || 0 : 0
+          const drawUs = ctx?.getDrawTime ? ctx.getDrawTime() || 0 : 0
+          if (updateUs || drawUs) {
+            const totalUs = updateUs + drawUs
+            const stats = cpuStatsRef.current
+            stats.accumMs += totalUs / 1000
+            stats.frames += 1
+            const now = performance.now()
+            if (now - stats.stamp >= 1000) {
+              stats.lastAvgMs = stats.accumMs / Math.max(1, stats.frames)
+              stats.accumMs = 0
+              stats.frames = 0
+              stats.stamp = now
+            }
+            if (now - stats.lastUiUpdate >= 250) {
+              const avgText = stats.lastAvgMs !== null ? ` | avg ${stats.lastAvgMs.toFixed(2)} ms/frame` : ''
+              const nextText =
+                `CPU Usage: ${Math.round(totalUs)} us (update ${Math.round(updateUs)} / draw ${Math.round(drawUs)})${avgText}`
+              stats.lastText = nextText
+              setCpuStatus(nextText)
+              stats.lastUiUpdate = now
+            }
+          } else if (cpuStatsRef.current.lastText !== 'CPU Usage: N/A (stats not available)') {
+            cpuStatsRef.current.lastText = 'CPU Usage: N/A (stats not available)'
+            setCpuStatus('CPU Usage: N/A (stats not available)')
+          }
+        }
+      } else {
+        renderer.render(scene, camera)
+        if (DEBUG_EFFEKSEER_PASS) {
+          renderFrame += 1
+          console.log(`[EffekseerConverter] frame=${renderFrame} effekseer pass=skipped`)
+        }
+        if (showStatsRef.current && cpuStatsRef.current.lastText !== 'CPU Usage: idle (no active effects)') {
+          cpuStatsRef.current.lastText = 'CPU Usage: idle (no active effects)'
+          setCpuStatus('CPU Usage: idle (no active effects)')
+        }
+      }
       frame = window.requestAnimationFrame(render)
     }
 
@@ -697,8 +764,8 @@ export default function EffekseerConverterCanvas() {
         }
 
         const settings = {
-          instanceMaxCount: 20000,
-          squareMaxCount: 20000,
+          instanceMaxCount: 4000,
+          squareMaxCount: 10000,
           externalRenderPass: true,
         }
 
@@ -1259,6 +1326,15 @@ export default function EffekseerConverterCanvas() {
               {sidebarCollapsed ? <IconChevronRightFilled /> : <IconChevronLeftFilled />}
             </button>
           </div>
+
+          {showStats && (
+            <div className="viewport-cpu-box">
+              <div className="viewport-cpu-label">CPU</div>
+              <div className="viewport-cpu-value">
+                {cpuStatus || 'CPU Usage: N/A (stats not available)'}
+              </div>
+            </div>
+          )}
 
           <div className="viewport-scene-tools">
             <div className="viewport-tools-header">Trigger</div>
