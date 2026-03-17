@@ -8,16 +8,12 @@ import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 
 const DEFAULT_RUNTIME_DIR = fileURLToPath(
-  new URL('../../../../_staging_webgpu_copy/build_top/Examples/WebGPU/', import.meta.url)
+  new URL('./public/effekseer-runtime/', import.meta.url)
 )
 
 const EFFEKSEER_RUNTIME_DIR = process.env.EFFEKSEER_RUNTIME_DIR
   ? path.resolve(process.env.EFFEKSEER_RUNTIME_DIR)
   : DEFAULT_RUNTIME_DIR
-
-const EXAMPLES_WEBGPU_DIR = fileURLToPath(
-  new URL('../', import.meta.url)
-)
 
 const EFFEKSEER_ROOT_DIR = fileURLToPath(
   new URL('../../../', import.meta.url)
@@ -46,7 +42,7 @@ const EFFEKSEER_RUNTIME_FILES = new Map<string, string>([
   [`${EFFEKSEER_RUNTIME_PUBLIC_PATH}/effekseer.webgpu.src.js`, path.join(EFFEKSEER_RUNTIME_DIR, 'effekseer.webgpu.src.js')],
   [`${EFFEKSEER_RUNTIME_PUBLIC_PATH}/Effekseer_WebGPU_Runtime.js`, path.join(EFFEKSEER_RUNTIME_DIR, 'Effekseer_WebGPU_Runtime.js')],
   [`${EFFEKSEER_RUNTIME_PUBLIC_PATH}/Effekseer_WebGPU_Runtime.wasm`, path.join(EFFEKSEER_RUNTIME_DIR, 'Effekseer_WebGPU_Runtime.wasm')],
-  [`${EFFEKSEER_RUNTIME_PUBLIC_PATH}/fflate.umd.js`, path.join(EXAMPLES_WEBGPU_DIR, 'fflate.umd.js')],
+  [`${EFFEKSEER_RUNTIME_PUBLIC_PATH}/fflate.umd.js`, path.join(EFFEKSEER_RUNTIME_DIR, 'fflate.umd.js')],
 ])
 
 function getContentType(urlPath: string): string {
@@ -653,7 +649,7 @@ export default defineConfig({
   },
   server: {
     fs: {
-      allow: [EXAMPLES_WEBGPU_DIR],
+      allow: [EFFEKSEER_RUNTIME_DIR],
     },
   },
   build: {
