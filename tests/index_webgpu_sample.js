@@ -2,6 +2,7 @@ import * as THREE from 'three/webgpu'
 import { EffekseerRenderPass } from 'three-effekseer'
 
 const statusEl = document.getElementById('status')
+const cpuEl = document.getElementById('cpu')
 const logEl = document.getElementById('log')
 
 const logLine = (message) => {
@@ -16,6 +17,9 @@ const logLine = (message) => {
 
 const setStatus = (text) => {
   if (statusEl) statusEl.textContent = text || ''
+}
+const setCpu = (text) => {
+  if (cpuEl) cpuEl.textContent = text || ''
 }
 
 logLine('BUILD_TAG: index_webgpu_sample.js 2026-03-17T18:20Z')
@@ -160,11 +164,25 @@ const main = async () => {
   setStatus('Runtime ready.')
 
   const clock = new THREE.Clock()
+  let frameCount = 0
+  let cpuAccum = 0
+  let lastCpuStamp = performance.now()
   const renderLoop = () => {
     requestAnimationFrame(renderLoop)
+    const cpuStart = performance.now()
     mesh.rotation.y += 0.01
     mesh.rotation.z += 0.01
     pass.render(Math.max(0, clock.getDelta() * 60.0))
+    const cpuEnd = performance.now()
+    cpuAccum += cpuEnd - cpuStart
+    frameCount += 1
+    if (cpuEnd - lastCpuStamp >= 1000) {
+      const avg = cpuAccum / Math.max(1, frameCount)
+      setCpu(`CPU avg: ${avg.toFixed(2)} ms/frame`)
+      frameCount = 0
+      cpuAccum = 0
+      lastCpuStamp = cpuEnd
+    }
   }
   renderLoop()
 }
