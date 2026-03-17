@@ -1,4 +1,4 @@
-const statusEl = document.getElementById('status')
+﻿const statusEl = document.getElementById('status')
 const errorEl = document.getElementById('error')
 const logEl = document.getElementById('log')
 const cpuLabelEl = document.getElementById('cpu-label')
@@ -113,6 +113,8 @@ if (!canvas || !effekseerApi) {
 } else {
   logLine('Modulo cargado: index_webgl.js')
   logLine(`effekseerApi.init: ${typeof effekseerApi.init}`)
+  logLine(`effekseerApi.initRuntime: ${typeof effekseerApi.initRuntime}`)
+  logLine(`effekseer_native: ${typeof window.effekseer_native}`)
   logLine(`effekseerApi.loadEffect: ${typeof effekseerApi.loadEffect}`)
 
   const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true })
@@ -186,8 +188,76 @@ if (!canvas || !effekseerApi) {
       setStatus('Step mode: ' + pendingFrames + ' frames pendientes')
     }
 
-    try {
-      effekseerApi.init(gl)
+    const wasmCandidates = [
+      '/effekseer-webgl/effekseer.wasm',
+      '/effekseer-webgl/effekseer.core.wasm',
+    ]
+
+    const initRuntimeAsync = (url, timeoutMs = 15000) => new Promise((resolve, reject) => {
+      let settled = false
+      const timeoutId = window.setTimeout(() => {
+        if (settled) return
+        settled = true
+        reject(new Error(`initRuntime timeout (${timeoutMs} ms) for ${url}`))
+      }, timeoutMs)
+
+      try {
+        effekseerApi.initRuntime(url, () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutId)
+          resolve()
+        }, () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutId)
+          reject(new Error(`initRuntime failed for ${url}`))
+        })
+      } catch (err) {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    })
+
+    const initRuntimeWithFallback = async () => {
+      let lastError = null
+      for (const url of wasmCandidates) {
+        logLine(`initRuntime: ${url}`)
+        try {
+          await initRuntimeAsync(url)
+          return url
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          lastError = err
+          logLine(`initRuntime failed: ${message}`)
+        }
+      }
+      throw (lastError instanceof Error ? lastError : new Error('initRuntime failed'))
+    }
+
+    const startRuntime = async () => {
+      if (typeof effekseerApi.initRuntime !== 'function') {
+        throw new Error('effekseer.initRuntime() no disponible. Verifica que effekseer.js sea la version WebAssembly.')
+      }
+
+      const wasmUrl = await initRuntimeWithFallback()
+      logLine(`initRuntime ok: ${wasmUrl}`)
+
+      if (typeof effekseerApi.createContext !== 'function') {
+        throw new Error('effekseer.createContext() no disponible. Runtime incompatible.')
+      }
+
+      const ctx = effekseerApi.createContext()
+      if (!ctx) {
+        throw new Error('createContext() returned null. Runtime not initialized.')
+      }
+
+      ctx.init(gl)
+      effekseerApi.defaultContext = ctx
+      window.effekseerContext = ctx
+
       resize()
       window.addEventListener('resize', resize)
 
@@ -216,9 +286,12 @@ if (!canvas || !effekseerApi) {
       setError('')
       logLine('renderLoop start')
       renderLoop(performance.now())
-    } catch (err) {
-      logLine(`init error: ${String(err && err.stack ? err.stack : err)}`)
-      setError(String(err && err.stack ? err.stack : err))
     }
+
+    startRuntime().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      logLine(`init error: ${message}`)
+      setError(message)
+    })
   }
 }

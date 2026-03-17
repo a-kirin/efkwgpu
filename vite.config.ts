@@ -708,6 +708,7 @@ function effekseerRuntimePlugin() {
 
       await copyDir(path.join(TESTS_DIR, 'Resources'), path.join(process.cwd(), 'dist', 'tests', 'Resources'))
       await copyDir(path.join(TESTS_DIR, 'Resources'), path.join(process.cwd(), 'dist', 'tests', 'input'))
+      await copyDir(path.join(TESTS_DIR, 'vendor'), path.join(process.cwd(), 'dist', 'tests', 'vendor'))
     },
   }
 }
