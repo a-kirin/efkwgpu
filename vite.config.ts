@@ -643,7 +643,7 @@ export default defineConfig({
         new URL('./addons/three-effekseer/index.ts', import.meta.url)
       ),
       'three/webgpu': fileURLToPath(
-        new URL('./node_modules/three/build/three.webgpu.js', import.meta.url)
+        new URL('./vendor/three/three.webgpu.js', import.meta.url)
       ),
     },
   },
