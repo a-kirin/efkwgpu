@@ -292,7 +292,7 @@ if (!canvas || !effekseerApi) {
 
       filePaths.forEach(({ name, path }) => {
         logLine(`loadEffect: ${path}`)
-        const effect = effekseerApi.loadEffect(path, 1.0, () => {
+        const effect = runtimeContext.loadEffect(path, 1.0, () => {
           logLine(`loadEffect ok: ${path}`)
         }, (message, failedPath) => {
           logLine(`loadEffect error: ${message} ${failedPath || path}`)
@@ -304,7 +304,7 @@ if (!canvas || !effekseerApi) {
           btn.addEventListener('click', () => {
             setStatus('Play: ' + name)
             logLine(`play: ${name}`)
-            window.latestHandle = effekseerApi.play(effect, 0, 0, 0)
+            window.latestHandle = runtimeContext.play(effect, 0, 0, 0)
           })
         } else if (buttons) {
           const newBtn = document.createElement('input')
@@ -312,9 +312,9 @@ if (!canvas || !effekseerApi) {
           newBtn.value = name
           newBtn.id = name
           newBtn.addEventListener('click', () => {
-          setStatus('Play: ' + name)
-          logLine(`play: ${name}`)
-          window.latestHandle = effekseerApi.play(effect, 0, 0, 0)
+            setStatus('Play: ' + name)
+            logLine(`play: ${name}`)
+            window.latestHandle = runtimeContext.play(effect, 0, 0, 0)
           })
           buttons.appendChild(newBtn)
         }
