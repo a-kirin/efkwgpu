@@ -18,7 +18,7 @@ const setStatus = (text) => {
   if (statusEl) statusEl.textContent = text || ''
 }
 
-logLine('BUILD_TAG: index_webgpu_sample.js 2026-03-17T18:05Z')
+logLine('BUILD_TAG: index_webgpu_sample.js 2026-03-17T18:10Z')
 
 const effects = {}
 let ctx = null
@@ -36,20 +36,11 @@ const loadEffect = async (entry) => {
     return
   }
   logLine(`loadEffect: ${entry.path}`)
-  const response = await fetch(entry.path)
-  if (!response.ok) {
-    logLine(`loadEffect fetch error: ${response.status} ${entry.path}`)
-    return
-  }
-  const buffer = await response.arrayBuffer()
   const effect = await new Promise((resolve, reject) => {
     let created = null
-    created = ctx.loadEffect(
-      buffer,
-      1.0,
-      () => resolve(created),
-      (message, path) => reject(new Error(path ? `${message} (${path})` : message))
-    )
+    created = ctx.loadEffect(entry.path, 1.0, () => resolve(created), (message, path) => {
+      reject(new Error(path ? `${message} (${path})` : message))
+    })
     if (!created) {
       reject(new Error(`loadEffect returned null for ${entry.id}`))
     }
