@@ -61,6 +61,35 @@ function getContentType(urlPath: string): string {
   return 'text/javascript; charset=utf-8'
 }
 
+function getStaticContentType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  switch (ext) {
+    case '.png':
+      return 'image/png'
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.webp':
+      return 'image/webp'
+    case '.gif':
+      return 'image/gif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.dds':
+      return 'application/octet-stream'
+    case '.efkefc':
+    case '.efkwg':
+    case '.efkwgpk':
+    case '.efkpkg':
+    case '.efkmat':
+    case '.efkmatd':
+    case '.efkmodel':
+      return 'application/octet-stream'
+    default:
+      return 'application/octet-stream'
+  }
+}
+
 type NativeConvertRequest = {
   sourceName: string
   sourceBase64: string
@@ -365,6 +394,22 @@ function effekseerRuntimePlugin() {
       server.middlewares.use(async (req, res, next) => {
         const urlPath = req.url ? req.url.split('?')[0] : ''
 
+        if (urlPath.startsWith('/tests/input/')) {
+          const relativePath = urlPath.replace('/tests/input/', '')
+          const sourcePath = path.join(TESTS_DIR, 'Resources', relativePath)
+          if (existsSync(sourcePath)) {
+            try {
+              const file = await readFile(sourcePath)
+              res.statusCode = 200
+              res.setHeader('Content-Type', getStaticContentType(sourcePath))
+              res.end(file)
+            } catch (error) {
+              next(error as Error)
+            }
+            return
+          }
+        }
+
         if (req.method === 'POST' && urlPath === '/api/native-convert') {
           let tempDir = ''
           try {
@@ -662,6 +707,7 @@ function effekseerRuntimePlugin() {
       }
 
       await copyDir(path.join(TESTS_DIR, 'Resources'), path.join(process.cwd(), 'dist', 'tests', 'Resources'))
+      await copyDir(path.join(TESTS_DIR, 'Resources'), path.join(process.cwd(), 'dist', 'tests', 'input'))
     },
   }
 }
