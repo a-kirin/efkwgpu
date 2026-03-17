@@ -73,7 +73,7 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
     resize()
     window.addEventListener('resize', resize)
 
-    const effect = context.loadEffect('Resources/Arrow1.efkwg', 1.0, () => {
+    const effect = context.loadEffect('Resources/16/AlphaBlendTexture01.efkefc', 1.0, () => {
       const handle = context.play(effect)
       handle?.setLocation?.(0, 0, 0)
     })
