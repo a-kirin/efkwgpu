@@ -739,6 +739,7 @@ export default defineConfig({
         vanilla: fileURLToPath(new URL('./vanilla/index.html', import.meta.url)),
         canvasOnly: fileURLToPath(new URL('./canvas-only/index.html', import.meta.url)),
         testsIndexWebgpu: fileURLToPath(new URL('./tests/index_webgpu.html', import.meta.url)),
+        testsIndexWebgpuSample: fileURLToPath(new URL('./tests/index_webgpu_sample.html', import.meta.url)),
         testsIndexCanvasOnly: fileURLToPath(new URL('./tests/index_canvas_only.html', import.meta.url)),
         testsIndexWebgl: fileURLToPath(new URL('./tests/index_webgl.html', import.meta.url)),
         testsPerformanceWebgpu: fileURLToPath(new URL('./tests/performance_webgpu.html', import.meta.url)),
