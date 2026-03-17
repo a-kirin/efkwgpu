@@ -1,17 +1,6 @@
 ﻿const statusEl = document.getElementById('status')
 const errorEl = document.getElementById('error')
 const logEl = document.getElementById('log')
-const cpuLabelEl = document.getElementById('cpu-label')
-const cpuChart = document.getElementById('cpu-chart')
-const cpuCtx = cpuChart instanceof HTMLCanvasElement ? cpuChart.getContext('2d') : null
-
-const MAX_CPU_SAMPLES = 240
-const cpuTotalSamples = new Array(MAX_CPU_SAMPLES).fill(0)
-const cpuUpdateSamples = new Array(MAX_CPU_SAMPLES).fill(0)
-const cpuDrawSamples = new Array(MAX_CPU_SAMPLES).fill(0)
-let cpuSampleIndex = 0
-
-const background = { r: 0.86, g: 0.89, b: 0.92, a: 1 }
 
 const logLine = (message) => {
   const time = new Date().toISOString().split('T')[1]?.replace('Z', '') ?? ''
@@ -29,60 +18,6 @@ function setStatus(text) {
 
 function setError(text) {
   if (errorEl) errorEl.textContent = text || ''
-}
-
-function pushCpuSample(updateUs, drawUs) {
-  const totalUs = updateUs + drawUs
-  cpuTotalSamples[cpuSampleIndex] = totalUs
-  cpuUpdateSamples[cpuSampleIndex] = updateUs
-  cpuDrawSamples[cpuSampleIndex] = drawUs
-  cpuSampleIndex = (cpuSampleIndex + 1) % MAX_CPU_SAMPLES
-}
-
-function drawCpuChart() {
-  if (!cpuCtx || !(cpuChart instanceof HTMLCanvasElement)) return
-
-  const width = cpuChart.width
-  const height = cpuChart.height
-  cpuCtx.clearRect(0, 0, width, height)
-
-  cpuCtx.fillStyle = '#0a1118'
-  cpuCtx.fillRect(0, 0, width, height)
-
-  const maxSample = Math.max(1000, ...cpuTotalSamples)
-  const scale = maxSample > 0 ? height / maxSample : 1
-
-  cpuCtx.strokeStyle = '#1f2a36'
-  cpuCtx.lineWidth = 1
-  cpuCtx.beginPath()
-  for (let i = 0; i <= 4; i += 1) {
-    const y = Math.round((height / 4) * i) + 0.5
-    cpuCtx.moveTo(0, y)
-    cpuCtx.lineTo(width, y)
-  }
-  cpuCtx.stroke()
-
-  const drawLine = (samples, color) => {
-    cpuCtx.strokeStyle = color
-    cpuCtx.lineWidth = 2
-    cpuCtx.beginPath()
-    for (let i = 0; i < MAX_CPU_SAMPLES; i += 1) {
-      const sampleIndex = (cpuSampleIndex + i) % MAX_CPU_SAMPLES
-      const value = samples[sampleIndex]
-      const x = (i / (MAX_CPU_SAMPLES - 1)) * width
-      const y = height - value * scale
-      if (i === 0) {
-        cpuCtx.moveTo(x, y)
-      } else {
-        cpuCtx.lineTo(x, y)
-      }
-    }
-    cpuCtx.stroke()
-  }
-
-  drawLine(cpuTotalSamples, '#4bc0ff')
-  drawLine(cpuUpdateSamples, '#7dff8f')
-  drawLine(cpuDrawSamples, '#ffcc4b')
 }
 
 window.capturePNG = function () {
@@ -107,22 +42,6 @@ const filePaths = [
 const canvas = document.getElementById('canvas')
 const effekseerApi = window.effekseer
 const buttons = document.getElementById('buttons')
-const effectButtons = new Map()
-
-if (buttons) {
-  filePaths.forEach(({ name }) => {
-    const btn = document.createElement('input')
-    btn.type = 'button'
-    btn.value = name
-    btn.id = name
-    btn.disabled = true
-    btn.addEventListener('click', () => {
-      setStatus(`"${name}" aún no está listo`)
-    })
-    buttons.appendChild(btn)
-    effectButtons.set(name, btn)
-  })
-}
 
 if (!canvas || !effekseerApi) {
   logLine(`canvas: ${!!canvas}, effekseerApi: ${!!effekseerApi}`)
@@ -134,240 +53,77 @@ if (!canvas || !effekseerApi) {
   logLine(`effekseer_native: ${typeof window.effekseer_native}`)
   logLine(`effekseerApi.loadEffect: ${typeof effekseerApi.loadEffect}`)
 
-  let gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true })
-    || canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true })
-
-  if (!gl) {
-    setError('WebGL no disponible en este navegador/contexto.')
+  if (typeof window.THREE === 'undefined') {
+    setError('THREE no está cargado. Revisa tests/index_webgl.html')
   } else {
+    const THREE = window.THREE
+    const scene = new THREE.Scene()
+    const width = canvas.width
+    const height = canvas.height
+    const camera = new THREE.PerspectiveCamera(30, width / height, 1, 1000)
+    camera.position.set(20, 20, 20)
+    camera.lookAt(new THREE.Vector3(0, 0, 0))
+
+    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true })
+    renderer.setSize(width, height, false)
+
+    const grid = new THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
+    scene.add(grid)
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff)
+    directionalLight.position.set(0, 0.7, 0.7)
+    scene.add(directionalLight)
+
+    const gl = renderer.getContext()
     const effects = {}
-    let playContinuously = true
-    let pendingFrames = 0
-    let lastFrameTime = performance.now()
-    let runtimeContext = null
-    let threeRenderer = null
-    let threeScene = null
-    let threeCamera = null
 
-    window.latestHandle = null
-
-    const resize = () => {
-      if (!(canvas instanceof HTMLCanvasElement)) return
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-      const cssWidth = Math.max(1, Math.floor(canvas.clientWidth))
-      const cssHeight = Math.max(1, Math.floor(canvas.clientHeight))
-      const width = Math.max(1, Math.floor(cssWidth * pixelRatio))
-      const height = Math.max(1, Math.floor(cssHeight * pixelRatio))
-
-      if (canvas.width !== width) canvas.width = width
-      if (canvas.height !== height) canvas.height = height
-
-      gl.viewport(0, 0, canvas.width, canvas.height)
-      if (threeRenderer && threeCamera) {
-        threeCamera.aspect = Math.max(0.001, canvas.width / canvas.height)
-        threeCamera.updateProjectionMatrix()
-        threeRenderer.setSize(canvas.width, canvas.height, false)
-      } else {
-        const aspect = Math.max(0.001, canvas.width / canvas.height)
-        if (runtimeContext?.setProjectionPerspective) {
-          runtimeContext.setProjectionPerspective(30, aspect, 1, 1000)
-          runtimeContext.setCameraLookAt(20, 20, 20, 0, 0, 0, 0, 1, 0)
-        } else {
-          effekseerApi.setProjectionPerspective?.(30, aspect, 1, 1000)
-          effekseerApi.setCameraLookAt?.(20, 20, 20, 0, 0, 0, 0, 1, 0)
-        }
-      }
-    }
-
-    const renderLoop = (time) => {
-      const deltaFrames = Math.max(0, ((time - lastFrameTime) / 1000) * 60.0)
-      lastFrameTime = time
-
-      if (playContinuously || pendingFrames > 0) {
-        gl.viewport(0, 0, canvas.width, canvas.height)
-        if (threeRenderer && threeScene && threeCamera) {
-          threeRenderer.render(threeScene, threeCamera)
-          if (runtimeContext?.setProjectionMatrix) {
-            runtimeContext.setProjectionMatrix(threeCamera.projectionMatrix.elements)
-            runtimeContext.setCameraMatrix(threeCamera.matrixWorldInverse.elements)
-          }
-        } else {
-          gl.clearColor(background.r, background.g, background.b, background.a)
-          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-        }
-
-        if (runtimeContext?.update && runtimeContext?.draw) {
-          runtimeContext.update(deltaFrames || 1.0)
-          runtimeContext.draw()
-        } else {
-          effekseerApi.update(deltaFrames || 1.0)
-          effekseerApi.draw()
-        }
-
-        const updateUs = effekseerApi.getUpdateTime ? effekseerApi.getUpdateTime() || 0 : 0
-        const drawUs = effekseerApi.getDrawTime ? effekseerApi.getDrawTime() || 0 : 0
-        if (updateUs || drawUs) {
-          pushCpuSample(updateUs, drawUs)
-          const totalUs = updateUs + drawUs
-          if (cpuLabelEl) {
-            cpuLabelEl.textContent = `CPU Usage: ${Math.round(totalUs)} us (update ${Math.round(updateUs)} / draw ${Math.round(drawUs)})`
-          }
-          drawCpuChart()
-        } else if (cpuLabelEl) {
-          cpuLabelEl.textContent = 'CPU Usage: N/A (stats not available)'
-        }
-
-        if (!playContinuously && pendingFrames > 0) {
-          pendingFrames -= 1
-        }
-      }
-
-      requestAnimationFrame(renderLoop)
-    }
-
-    window.step = function (frame) {
-      const count = Math.max(1, frame | 0)
-      playContinuously = false
-      pendingFrames += count
-      setStatus('Step mode: ' + pendingFrames + ' frames pendientes')
-    }
-
-    const wasmCandidates = [
-      '/effekseer-webgl/effekseer.wasm',
-      '/effekseer-webgl/effekseer.core.wasm',
-    ]
-
-    const initRuntimeAsync = (url, timeoutMs = 15000) => new Promise((resolve, reject) => {
-      let settled = false
-      const timeoutId = window.setTimeout(() => {
-        if (settled) return
-        settled = true
-        reject(new Error(`initRuntime timeout (${timeoutMs} ms) for ${url}`))
-      }, timeoutMs)
-
-      try {
-        effekseerApi.initRuntime(url, () => {
-          if (settled) return
-          settled = true
-          clearTimeout(timeoutId)
-          resolve()
-        }, () => {
-          if (settled) return
-          settled = true
-          clearTimeout(timeoutId)
-          reject(new Error(`initRuntime failed for ${url}`))
-        })
-      } catch (err) {
-        if (settled) return
-        settled = true
-        clearTimeout(timeoutId)
-        reject(err instanceof Error ? err : new Error(String(err)))
-      }
-    })
-
-    const initRuntimeWithFallback = async () => {
-      let lastError = null
-      for (const url of wasmCandidates) {
-        logLine(`initRuntime: ${url}`)
-        try {
-          await initRuntimeAsync(url)
-          return url
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          lastError = err
-          logLine(`initRuntime failed: ${message}`)
-        }
-      }
-      throw (lastError instanceof Error ? lastError : new Error('initRuntime failed'))
-    }
-
-    const startRuntime = async () => {
-      if (typeof effekseerApi.initRuntime !== 'function') {
-        throw new Error('effekseer.initRuntime() no disponible. Verifica que effekseer.js sea la version WebAssembly.')
-      }
-
-      const wasmUrl = await initRuntimeWithFallback()
-      logLine(`initRuntime ok: ${wasmUrl}`)
-
-      if (typeof effekseerApi.createContext !== 'function') {
-        throw new Error('effekseer.createContext() no disponible. Runtime incompatible.')
-      }
-
-      const ctx = effekseerApi.createContext()
-      if (!ctx) {
-        throw new Error('createContext() returned null. Runtime not initialized.')
-      }
-
-      if (window.THREE && window.THREE.WebGLRenderer) {
-        const renderer = new window.THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true })
-        renderer.setSize(canvas.width, canvas.height, false)
-        threeRenderer = renderer
-        threeScene = new window.THREE.Scene()
-        threeCamera = new window.THREE.PerspectiveCamera(
-          30,
-          Math.max(0.001, canvas.width / canvas.height),
-          1,
-          1000
-        )
-        threeCamera.position.set(20, 20, 20)
-        threeCamera.lookAt(new window.THREE.Vector3(0, 0, 0))
-        gl = renderer.getContext()
-
-        const grid = new window.THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
-        threeScene.add(grid)
-        const directionalLight = new window.THREE.DirectionalLight(0xffffff)
-        directionalLight.position.set(0, 0.7, 0.7)
-        threeScene.add(directionalLight)
-      }
-
-      ctx.init(gl)
-      effekseerApi.defaultContext = ctx
-      runtimeContext = ctx
-      window.effekseerContext = ctx
-
-      resize()
-      window.addEventListener('resize', resize)
-
+    const setupButtons = (context) => {
+      if (!buttons) return
       filePaths.forEach(({ name, path }) => {
         logLine(`loadEffect: ${path}`)
-        const effect = runtimeContext.loadEffect(path, 1.0, () => {
+        const effect = context.loadEffect(path, 1.0, () => {
           logLine(`loadEffect ok: ${path}`)
         }, (message, failedPath) => {
           logLine(`loadEffect error: ${message} ${failedPath || path}`)
         })
         effects[name] = effect
-        const btn = effectButtons.get(name)
-        if (btn) {
-          btn.disabled = false
-          btn.addEventListener('click', () => {
-            setStatus('Play: ' + name)
-            logLine(`play: ${name}`)
-            window.latestHandle = runtimeContext.play(effect, 0, 0, 0)
-          })
-        } else if (buttons) {
-          const newBtn = document.createElement('input')
-          newBtn.type = 'button'
-          newBtn.value = name
-          newBtn.id = name
-          newBtn.addEventListener('click', () => {
-            setStatus('Play: ' + name)
-            logLine(`play: ${name}`)
-            window.latestHandle = runtimeContext.play(effect, 0, 0, 0)
-          })
-          buttons.appendChild(newBtn)
-        }
-      })
 
+        const btn = document.createElement('input')
+        btn.type = 'button'
+        btn.value = name
+        btn.id = name
+        btn.addEventListener('click', () => {
+          setStatus('Play: ' + name)
+          logLine(`play: ${name}`)
+          window.latestHandle = context.play(effect, 0, 0, 0)
+        })
+        buttons.appendChild(btn)
+      })
+    }
+
+    const renderLoop = (context) => {
+      context.update()
+      renderer.render(scene, camera)
+      context.setProjectionMatrix(camera.projectionMatrix.elements)
+      context.setCameraMatrix(camera.matrixWorldInverse.elements)
+      context.draw()
+      requestAnimationFrame(() => renderLoop(context))
+    }
+
+    effekseerApi.initRuntime('/effekseer-webgl/effekseer.wasm', () => {
+      const context = effekseerApi.createContext()
+      if (!context) {
+        setError('createContext() returned null')
+        return
+      }
+      context.init(gl)
+      setupButtons(context)
       setStatus('WebGL runtime listo.')
       setError('')
       logLine('renderLoop start')
-      renderLoop(performance.now())
-    }
-
-    startRuntime().catch((err) => {
-      const message = err instanceof Error ? err.message : String(err)
-      logLine(`init error: ${message}`)
-      setError(message)
+      renderLoop(context)
+    }, () => {
+      setError('initRuntime failed')
     })
   }
 }
