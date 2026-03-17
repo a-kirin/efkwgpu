@@ -7,7 +7,6 @@ import {
 } from 'react'
 import * as THREE from 'three/webgpu'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import Stats from 'three/addons/libs/stats.module.js'
 import './App.css'
 import testUrl from './pkmoves/test.efkwgpk?url'
 import shadowballUrl from './pkmoves/shadowball.efkwgpk?url'
@@ -74,10 +73,6 @@ type RuntimeState = {
   activeEffectId: string | null
 }
 
-type SessionPackage = {
-  id: string
-  pkg: ConvertedPackage
-}
 
 type IconProps = {
   size?: number
@@ -125,23 +120,6 @@ const IconChevronRightFilled = ({ size = 16 }: IconProps) => (
   </svg>
 )
 
-const IconDownloadFilled = ({ size = 16 }: IconProps) => (
-  <svg className="ctrl-icon" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
-    <path d="M7 2h2v6.3l2.1-2.1 1.4 1.4L8 12.1 3.5 7.6l1.4-1.4L7 8.3zM3 13h10v1H3z" />
-  </svg>
-)
-
-const IconTrashFilled = ({ size = 16 }: IconProps) => (
-  <svg className="ctrl-icon" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
-    <path d="M6 2h4l.6 1H13v1H3V3h2.4zM4 5h8l-.6 8H4.6z" />
-  </svg>
-)
-
-const IconResetViewFilled = ({ size = 16 }: IconProps) => (
-  <svg className="ctrl-icon" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
-    <path d="M8 2a6 6 0 0 0-5.9 5H0l2.7 3L5.4 7H3.1A4.9 4.9 0 1 1 8 13a4.8 4.8 0 0 1-3.2-1.2l-1.3 1.5A6 6 0 1 0 8 2z" />
-  </svg>
-)
 
 const SAMPLE_EFFECTS: SampleEffect[] = [
   { id: 'test', label: 'test.efkwgpk', path: testUrl, note: 'baseline package' },
@@ -153,9 +131,6 @@ const SAMPLE_EFFECTS: SampleEffect[] = [
 const BUILTIN_IDS = SAMPLE_EFFECTS.map((effect) => effect.id)
 const TRIGGER_INDICES = [0, 1, 2, 3] as const
 const CONVERTED_PREVIEW_SCALE = 1
-const DEFAULT_BACKGROUND = '#000000'
-const DEFAULT_CAMERA_POSITION = new THREE.Vector3(9, 4.5, 9)
-const DEFAULT_CAMERA_TARGET = new THREE.Vector3(0, 1, 0)
 const SAMPLE_LOOKUP = new Map(SAMPLE_EFFECTS.map((effect) => [effect.id, effect]))
 const BUILTIN_REGISTRY = Object.fromEntries(
   SAMPLE_EFFECTS.map((effect) => [
