@@ -68,13 +68,14 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
 
   const clock = new THREE.Clock()
   const scene = new THREE.Scene()
-  scene.background = new THREE.Color('#ffffff')
+  const backgroundColor = new THREE.Color('#dbe2ea')
+  scene.background = backgroundColor
   const camera = new THREE.PerspectiveCamera(30.0, canvas.width / canvas.height, 1, 1000)
   camera.position.set(20, 20, 20)
   camera.lookAt(new THREE.Vector3(0, 0, 0))
 
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: true })
-  renderer.setClearColor(0xffffff, 1)
+  renderer.setClearColor(backgroundColor, 1)
 
   const effects = {}
   let pass = null
@@ -157,7 +158,7 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
 
       window.context = context
 
-      const grid = new THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
+      const grid = new THREE.GridHelper(20, 10, 0x5b6775, 0x9aa6b2)
       scene.add(grid)
 
       const directionalLight = new THREE.DirectionalLight(0xffffff)
