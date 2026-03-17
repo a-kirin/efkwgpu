@@ -12,6 +12,8 @@ const logLine = (message) => {
   }
 }
 
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:20Z')
+
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
 }
@@ -35,95 +37,80 @@ window.callExists = function () {
   return exists
 }
 
-const filePaths = [
-  { name: 'blood.efkefc', path: 'Resources/blood.efkefc' },
-]
-
-const canvas = document.getElementById('canvas')
-const effekseerApi = window.effekseer
-const buttons = document.getElementById('buttons')
-
-if (!canvas || !effekseerApi) {
-  logLine(`canvas: ${!!canvas}, effekseerApi: ${!!effekseerApi}`)
-  setError('Effekseer WebGL runtime no disponible en este navegador/contexto.')
-} else {
-  logLine('Modulo cargado: index_webgl.js')
-  logLine(`effekseerApi.init: ${typeof effekseerApi.init}`)
-  logLine(`effekseerApi.initRuntime: ${typeof effekseerApi.initRuntime}`)
-  logLine(`effekseer_native: ${typeof window.effekseer_native}`)
-  logLine(`effekseerApi.loadEffect: ${typeof effekseerApi.loadEffect}`)
+function main() {
+  const canvas = document.getElementById('canvas')
+  if (!canvas) {
+    setError('Canvas no disponible.')
+    return
+  }
 
   if (typeof window.THREE === 'undefined') {
     setError('THREE no está cargado. Revisa tests/index_webgl.html')
-  } else {
-    const THREE = window.THREE
-    const scene = new THREE.Scene()
-    const width = canvas.width
-    const height = canvas.height
-    const camera = new THREE.PerspectiveCamera(30, width / height, 1, 1000)
-    camera.position.set(20, 20, 20)
-    camera.lookAt(new THREE.Vector3(0, 0, 0))
-
-    const renderer = new THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true })
-    renderer.setSize(width, height, false)
-
-    const grid = new THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
-    scene.add(grid)
-
-    const directionalLight = new THREE.DirectionalLight(0xffffff)
-    directionalLight.position.set(0, 0.7, 0.7)
-    scene.add(directionalLight)
-
-    const gl = renderer.getContext()
-    const effects = {}
-
-    const setupButtons = (context) => {
-      if (!buttons) return
-      filePaths.forEach(({ name, path }) => {
-        logLine(`loadEffect: ${path}`)
-        const effect = context.loadEffect(path, 1.0, () => {
-          logLine(`loadEffect ok: ${path}`)
-        }, (message, failedPath) => {
-          logLine(`loadEffect error: ${message} ${failedPath || path}`)
-        })
-        effects[name] = effect
-
-        const btn = document.createElement('input')
-        btn.type = 'button'
-        btn.value = name
-        btn.id = name
-        btn.addEventListener('click', () => {
-          setStatus('Play: ' + name)
-          logLine(`play: ${name}`)
-          window.latestHandle = context.play(effect, 0, 0, 0)
-        })
-        buttons.appendChild(btn)
-      })
-    }
-
-    const renderLoop = (context) => {
-      context.update()
-      renderer.render(scene, camera)
-      context.setProjectionMatrix(camera.projectionMatrix.elements)
-      context.setCameraMatrix(camera.matrixWorldInverse.elements)
-      context.draw()
-      requestAnimationFrame(() => renderLoop(context))
-    }
-
-    effekseerApi.initRuntime('/effekseer-webgl/effekseer.wasm', () => {
-      const context = effekseerApi.createContext()
-      if (!context) {
-        setError('createContext() returned null')
-        return
-      }
-      context.init(gl)
-      setupButtons(context)
-      setStatus('WebGL runtime listo.')
-      setError('')
-      logLine('renderLoop start')
-      renderLoop(context)
-    }, () => {
-      setError('initRuntime failed')
-    })
+    return
   }
+
+  const THREE = window.THREE
+  const renderer = new THREE.WebGLRenderer({ canvas })
+  renderer.setSize(canvas.width, canvas.height)
+  const clock = new THREE.Clock()
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(30.0, canvas.width / canvas.height, 1, 1000)
+  camera.position.set(20, 20, 20)
+  camera.lookAt(new THREE.Vector3(0, 0, 0))
+
+  const context = effekseer.createContext()
+  context.init(renderer.getContext())
+
+  const fastRenderMode = true
+  if (fastRenderMode) {
+    context.setRestorationOfStatesFlag(false)
+  }
+
+  const effectPath = 'Resources/blood.efkefc'
+  logLine(`loadEffect: ${effectPath}`)
+  const effect = context.loadEffect(effectPath, 1.0, () => {
+    logLine(`loadEffect ok: ${effectPath}`)
+    const handle = context.play(effect)
+    handle.setLocation(0, 0, 0)
+    window.latestHandle = handle
+    setStatus('Play: blood.efkefc')
+  }, (message, failedPath) => {
+    logLine(`loadEffect error: ${message} ${failedPath || effectPath}`)
+    setError(`loadEffect error: ${message}`)
+  })
+
+  const renderLoop = () => {
+    requestAnimationFrame(renderLoop)
+
+    context.update(clock.getDelta() * 60.0)
+    renderer.render(scene, camera)
+    context.setProjectionMatrix(camera.projectionMatrix.elements)
+    context.setCameraMatrix(camera.matrixWorldInverse.elements)
+    context.draw()
+
+    if (fastRenderMode) {
+      renderer.resetState()
+    }
+  }
+
+  logLine('renderLoop start')
+  renderLoop()
+}
+
+if (!window.effekseer) {
+  logLine('Effekseer runtime no disponible.')
+  setError('Effekseer runtime no disponible.')
+} else {
+  logLine('Modulo cargado: index_webgl.js')
+  logLine(`effekseerApi.init: ${typeof effekseer.init}`)
+  logLine(`effekseerApi.initRuntime: ${typeof effekseer.initRuntime}`)
+  logLine(`effekseer_native: ${typeof window.effekseer_native}`)
+  logLine(`effekseerApi.loadEffect: ${typeof effekseer.loadEffect}`)
+
+  effekseer.initRuntime('/effekseer-webgl/effekseer.wasm', () => {
+    effekseer.setLogEnabled?.(true)
+    main()
+  }, () => {
+    setError('initRuntime failed')
+  })
 }
