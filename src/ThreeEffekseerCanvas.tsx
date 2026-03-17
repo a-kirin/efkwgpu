@@ -30,6 +30,7 @@ export default function ThreeEffekseerCanvas() {
     if (!canvas || !('gpu' in navigator) || !effekseer) {
       return
     }
+    const effekseerApi = effekseer
 
     let cancelled = false
     let frame = 0
@@ -113,13 +114,13 @@ export default function ThreeEffekseerCanvas() {
 
       scene.add(ambientLight, keyLight, rimLight, mesh)
 
-      effekseer.setWebGPUDevice(device)
-      await effekseer.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+      effekseerApi.setWebGPUDevice(device)
+      await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
       if (cancelled) {
         return
       }
 
-      ctx = effekseer.createContext()
+      ctx = effekseerApi.createContext()
       if (!ctx?.initExternal({
         instanceMaxCount: 8000,
         squareMaxCount: 10000,
@@ -166,7 +167,7 @@ export default function ThreeEffekseerCanvas() {
       window.removeEventListener('resize', resize)
       handle?.stop()
       ctx?.stopAll()
-      effekseer.releaseContext(ctx)
+      effekseerApi.releaseContext(ctx)
       effekseerPass?.dispose()
       geometry?.dispose()
       material?.dispose()

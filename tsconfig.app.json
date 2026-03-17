@@ -19,7 +19,7 @@
     "paths": {
       "three": ["./node_modules/@types/three/index.d.ts"],
       "three/webgpu": ["./node_modules/@types/three/src/Three.WebGPU.d.ts"],
-      "three-effekseer": ["../addons/three-effekseer/index.ts"]
+      "three-effekseer": ["./addons/three-effekseer/index.ts"]
     },
 
     /* Linting */
@@ -30,5 +30,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "../addons/**/*.ts", "../addons/**/*.d.ts"]
+  "include": ["src", "addons/**/*.ts", "addons/**/*.d.ts"]
 }

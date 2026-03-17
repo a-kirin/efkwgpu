@@ -21,6 +21,7 @@ async function main(): Promise<void> {
   const effekseer = window.effekseer
 
   if (!(canvas instanceof HTMLCanvasElement) || !('gpu' in navigator) || !effekseer) return
+  const effekseerApi = effekseer
 
   let cancelled = false
   let handle: EffekseerHandle | null = null
@@ -70,14 +71,14 @@ async function main(): Promise<void> {
 
   // Initialize the Effekseer WebGPU runtime
   // Give Effekseer the GPUDevice created by Three.
-  effekseer.setWebGPUDevice(device)
+  effekseerApi.setWebGPUDevice(device)
   // Load and initialize the WebAssembly runtime.
-  await effekseer.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+  await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
   if (cancelled) return
 
   // Create a context
   // Create one Effekseer rendering context for this scene.
-  const ctx = effekseer.createContext()
+  const ctx = effekseerApi.createContext()
   // Initialize the context for external render-pass rendering.
   if (!ctx?.initExternal({
     instanceMaxCount: 20000,
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
     // Stop all active effect instances in this context.
     ctx.stopAll()
     // Release the native Effekseer context resources.
-    effekseer.releaseContext(ctx)
+    effekseerApi.releaseContext(ctx)
     geometry.dispose()
     material.dispose()
     renderer.dispose()
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
     // Stop all active effect instances in this context.
     ctx.stopAll()
     // Release the native Effekseer context resources.
-    effekseer.releaseContext(ctx)
+    effekseerApi.releaseContext(ctx)
     // Release the render-pass resources owned by the add-on.
     effekseerPass.dispose()
     geometry.dispose()

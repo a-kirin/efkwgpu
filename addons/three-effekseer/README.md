@@ -1,0 +1,57 @@
+# three-effekseer
+
+`three-effekseer` is a WebGPU add-on that integrates Effekseer into a patched Three.js WebGPU renderer.
+
+## Version Baseline
+
+This add-on is currently based on Effekseer `1.80 b2`.
+The required local Three.js fork baseline is `0.182.0-eff1.0`.
+
+## Requirements
+
+- The local Three.js fork must expose the external render pass hook implemented in:
+  - [WebGPURenderer.js](../../node_modules/three/src/renderers/webgpu/WebGPURenderer.js)
+  - [WebGPUBackend.js](../../node_modules/three/src/renderers/webgpu/WebGPUBackend.js)
+- The Effekseer WebGPU runtime must already be loaded in the page.
+
+## Canonical Example
+
+The canonical consumer of the add-on is the vanilla example:
+
+- HTML entry: [vanilla/index.html](../../react-vite-ts/vanilla/index.html)
+- Integration: [vanilla-main.ts](../../react-vite-ts/src/vanilla-main.ts)
+
+The React example in [ThreeEffekseerCanvas.tsx](../../react-vite-ts/src/ThreeEffekseerCanvas.tsx) consumes the same add-on, but it is not the reference integration.
+
+## Public API
+
+```ts
+import { EffekseerRenderPass } from 'three-effekseer'
+
+const pass = new EffekseerRenderPass(
+  renderer,
+  scene,
+  camera,
+  ctx,
+  { mode: 'composite' }
+)
+
+const capabilities = pass.getCapabilities()
+```
+
+This mirrors the WebGL-side integration format by exposing a dedicated `EffekseerRenderPass` on the Three side while keeping the Effekseer context external.
+
+`mode` defaults to `'basic'`.
+
+## Modes
+
+| Mode | Distortion | Depth Occlusion | Soft Particles | LOD | Collisions | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `basic` | No | Yes | No | No | No | Effekseer is injected into the primary scene render pass. Lowest cost path. |
+| `composite` | Yes | Yes | No | No | No | Uses scene capture for background refraction, renders the scene again into a composite target, then presents through `PostProcessing`. |
+
+## Unsupported Features
+
+- `Soft particles`: not supported yet. The add-on does not expose a sampleable scene depth texture to Effekseer.
+- `LOD`: not supported. The add-on does not currently provide a Three-side feature contract for effect level-of-detail selection.
+- `Collisions`: not supported. The add-on does not currently bridge Three scene collision data or collision callbacks into Effekseer.

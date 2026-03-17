@@ -387,7 +387,7 @@ export default function EffekseerConverterCanvas() {
               sampleBytes,
               1,
               () => resolve(requestedEffect!),
-              (message, path) => reject(new Error(path ? `${message} (${path})` : message))
+              (message: string, path: string) => reject(new Error(path ? `${message} (${path})` : message))
             )
             if (!requestedEffect) {
               reject(new Error(`loadEffect(bytes for "${sample.label}") returned null.`))
@@ -436,7 +436,7 @@ export default function EffekseerConverterCanvas() {
         toArrayBuffer(pkg.bytes),
         CONVERTED_PREVIEW_SCALE,
         () => resolve(requestedEffect!),
-        (message, path) => reject(new Error(path ? `${message} (${path})` : message))
+        (message: string, path: string) => reject(new Error(path ? `${message} (${path})` : message))
       )
       if (!requestedEffect) {
         reject(new Error('loadEffect(bytes) returned null.'))
@@ -548,6 +548,7 @@ export default function EffekseerConverterCanvas() {
       setError('WebGPU runtime scripts are not available in this page.')
       return
     }
+    const effekseerApi = effekseer
 
     let cancelled = false
     let frame = 0
@@ -651,7 +652,7 @@ export default function EffekseerConverterCanvas() {
       const runtime = runtimeRef.current
       runtime.handle?.stop()
       runtime.ctx?.stopAll()
-      effekseer.releaseContext(runtime.ctx)
+      effekseerApi.releaseContext(runtime.ctx)
       runtime.pass?.dispose()
       geometry.dispose()
       material.dispose()
@@ -681,16 +682,16 @@ export default function EffekseerConverterCanvas() {
         }
 
         appendLog('Initializing Effekseer runtime.')
-        effekseer.setWebGPUDevice(device)
-        await effekseer.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
-        ;(effekseer as unknown as { setLogEnabled?: (flag: boolean) => void }).setLogEnabled?.(true)
+        effekseerApi.setWebGPUDevice(device)
+        await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+        ;(effekseerApi as unknown as { setLogEnabled?: (flag: boolean) => void }).setLogEnabled?.(true)
         appendLog('Effekseer runtime native log enabled.')
         if (cancelled) {
           cleanup()
           return
         }
 
-        const ctx = effekseer.createContext() as ExtendedEffekseerContext | null
+        const ctx = effekseerApi.createContext() as ExtendedEffekseerContext | null
         if (!ctx) {
           throw new Error('Effekseer createContext() returned null.')
         }

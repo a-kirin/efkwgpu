@@ -35,6 +35,7 @@ export default function ViewerCanvas() {
     if (!canvas || !('gpu' in navigator) || !effekseer) {
       return
     }
+    const effekseerApi = effekseer
 
     // Local viewer state kept for the lifetime of this mounted integration.
     let cancelled = false
@@ -163,14 +164,14 @@ export default function ViewerCanvas() {
 
       // The runtime module is initialized once and then receives the host-owned WebGPU device.
       presentationFormat = navigator.gpu.getPreferredCanvasFormat()
-      effekseer.setWebGPUDevice(device)
-      await effekseer.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+      effekseerApi.setWebGPUDevice(device)
+      await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
       if (cancelled) {
         return
       }
 
       // Context creation is separate from effect registration so the host setup stays independent from assets.
-      ctx = effekseer.createContext()
+      ctx = effekseerApi.createContext()
       if (!ctx?.initExternal({
         instanceMaxCount: 8000,
         squareMaxCount: 10000,
@@ -229,7 +230,7 @@ export default function ViewerCanvas() {
       window.removeEventListener('resize', resize)
       handle?.stop()
       ctx?.stopAll()
-      effekseer.releaseContext(ctx)
+      effekseerApi.releaseContext(ctx)
     }
   }, [])
 

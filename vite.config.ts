@@ -644,7 +644,7 @@ export default defineConfig({
   resolve: {
     alias: {
       'three-effekseer': fileURLToPath(
-        new URL('../addons/three-effekseer/index.ts', import.meta.url)
+        new URL('./addons/three-effekseer/index.ts', import.meta.url)
       ),
       'three/webgpu': fileURLToPath(
         new URL('../node_modules/three/build/three.webgpu.js', import.meta.url)
