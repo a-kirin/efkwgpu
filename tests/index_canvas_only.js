@@ -1,6 +1,69 @@
 const statusEl = document.getElementById('status')
 const errorEl = document.getElementById('error')
 const logEl = document.getElementById('log')
+const cpuLabelEl = document.getElementById('cpu-label')
+const cpuChart = document.getElementById('cpu-chart')
+const cpuCtx = cpuChart instanceof HTMLCanvasElement ? cpuChart.getContext('2d') : null
+
+const MAX_CPU_SAMPLES = 240
+const cpuTotalSamples = new Array(MAX_CPU_SAMPLES).fill(0)
+const cpuUpdateSamples = new Array(MAX_CPU_SAMPLES).fill(0)
+const cpuDrawSamples = new Array(MAX_CPU_SAMPLES).fill(0)
+let cpuSampleIndex = 0
+
+function pushCpuSample(updateUs, drawUs) {
+  const totalUs = updateUs + drawUs
+  cpuTotalSamples[cpuSampleIndex] = totalUs
+  cpuUpdateSamples[cpuSampleIndex] = updateUs
+  cpuDrawSamples[cpuSampleIndex] = drawUs
+  cpuSampleIndex = (cpuSampleIndex + 1) % MAX_CPU_SAMPLES
+}
+
+function drawCpuChart() {
+  if (!cpuCtx || !(cpuChart instanceof HTMLCanvasElement)) return
+
+  const width = cpuChart.width
+  const height = cpuChart.height
+  cpuCtx.clearRect(0, 0, width, height)
+
+  cpuCtx.fillStyle = '#0a1118'
+  cpuCtx.fillRect(0, 0, width, height)
+
+  const maxSample = Math.max(1000, ...cpuTotalSamples)
+  const scale = maxSample > 0 ? height / maxSample : 1
+
+  cpuCtx.strokeStyle = '#1f2a36'
+  cpuCtx.lineWidth = 1
+  cpuCtx.beginPath()
+  for (let i = 0; i <= 4; i += 1) {
+    const y = Math.round((height / 4) * i) + 0.5
+    cpuCtx.moveTo(0, y)
+    cpuCtx.lineTo(width, y)
+  }
+  cpuCtx.stroke()
+
+  const drawLine = (samples, color) => {
+    cpuCtx.strokeStyle = color
+    cpuCtx.lineWidth = 2
+    cpuCtx.beginPath()
+    for (let i = 0; i < MAX_CPU_SAMPLES; i += 1) {
+      const sampleIndex = (cpuSampleIndex + i) % MAX_CPU_SAMPLES
+      const value = samples[sampleIndex]
+      const x = (i / (MAX_CPU_SAMPLES - 1)) * width
+      const y = height - value * scale
+      if (i === 0) {
+        cpuCtx.moveTo(x, y)
+      } else {
+        cpuCtx.lineTo(x, y)
+      }
+    }
+    cpuCtx.stroke()
+  }
+
+  drawLine(cpuTotalSamples, '#4bc0ff')
+  drawLine(cpuUpdateSamples, '#7dff8f')
+  drawLine(cpuDrawSamples, '#ffcc4b')
+}
 
 const logLine = (message) => {
   const time = new Date().toISOString().split('T')[1]?.replace('Z', '') ?? ''
@@ -99,6 +162,19 @@ if (!canvas || !effekseerApi || !('gpu' in navigator)) {
     if (playContinuously || pendingFrames > 0) {
       context.update(deltaFrames || 1.0)
       context.draw()
+      const statsCtx = context
+      const updateUs = statsCtx.getUpdateTime ? statsCtx.getUpdateTime() || 0 : 0
+      const drawUs = statsCtx.getDrawTime ? statsCtx.getDrawTime() || 0 : 0
+      if (updateUs || drawUs) {
+        pushCpuSample(updateUs, drawUs)
+        const totalUs = updateUs + drawUs
+        if (cpuLabelEl) {
+          cpuLabelEl.textContent = `CPU Usage: ${Math.round(totalUs)} us (update ${Math.round(updateUs)} / draw ${Math.round(drawUs)})`
+        }
+        drawCpuChart()
+      } else if (cpuLabelEl) {
+        cpuLabelEl.textContent = 'CPU Usage: N/A (stats not available)'
+      }
       if (!playContinuously && pendingFrames > 0) {
         pendingFrames -= 1
       }

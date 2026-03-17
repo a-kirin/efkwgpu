@@ -35,6 +35,27 @@
       overflow: auto;
       white-space: pre-wrap;
     }
+    #cpu-panel {
+      margin-top: 10px;
+      width: 440px;
+      padding: 8px 10px;
+      background: #0f1720;
+      color: #dce6f0;
+      border: 1px solid #1f2a36;
+      border-radius: 6px;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+    }
+    #cpu-label {
+      margin-bottom: 6px;
+    }
+    #cpu-chart {
+      width: 420px;
+      height: 140px;
+      background: #0a1118;
+      border: 1px solid #1f2a36;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -49,6 +70,10 @@
   <div id="status"></div>
   <div id="error"></div>
   <div id="log"></div>
+  <div id="cpu-panel">
+    <div id="cpu-label">CPU Usage: -- us</div>
+    <canvas id="cpu-chart" width="420" height="140"></canvas>
+  </div>
 
   <script src="/effekseer-runtime/fflate.umd.js"></script>
   <script src="/effekseer-runtime/Effekseer_WebGPU_Runtime.js"></script>
