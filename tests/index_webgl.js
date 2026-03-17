@@ -101,7 +101,7 @@ window.callExists = function () {
 }
 
 const filePaths = [
-  { name: 'blood.efkefc', path: 'input/blood.efkefc' },
+  { name: 'blood.efkefc', path: 'Resources/blood.efkefc' },
 ]
 
 const canvas = document.getElementById('canvas')
@@ -134,7 +134,7 @@ if (!canvas || !effekseerApi) {
   logLine(`effekseer_native: ${typeof window.effekseer_native}`)
   logLine(`effekseerApi.loadEffect: ${typeof effekseerApi.loadEffect}`)
 
-  const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true })
+  let gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true })
     || canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true })
 
   if (!gl) {
@@ -145,6 +145,9 @@ if (!canvas || !effekseerApi) {
     let pendingFrames = 0
     let lastFrameTime = performance.now()
     let runtimeContext = null
+    let threeRenderer = null
+    let threeScene = null
+    let threeCamera = null
 
     window.latestHandle = null
 
@@ -160,14 +163,19 @@ if (!canvas || !effekseerApi) {
       if (canvas.height !== height) canvas.height = height
 
       gl.viewport(0, 0, canvas.width, canvas.height)
-
-      const aspect = Math.max(0.001, canvas.width / canvas.height)
-      if (runtimeContext?.setProjectionPerspective) {
-        runtimeContext.setProjectionPerspective(30, aspect, 1, 1000)
-        runtimeContext.setCameraLookAt(20, 20, 20, 0, 0, 0, 0, 1, 0)
+      if (threeRenderer && threeCamera) {
+        threeCamera.aspect = Math.max(0.001, canvas.width / canvas.height)
+        threeCamera.updateProjectionMatrix()
+        threeRenderer.setSize(canvas.width, canvas.height, false)
       } else {
-        effekseerApi.setProjectionPerspective?.(30, aspect, 1, 1000)
-        effekseerApi.setCameraLookAt?.(20, 20, 20, 0, 0, 0, 0, 1, 0)
+        const aspect = Math.max(0.001, canvas.width / canvas.height)
+        if (runtimeContext?.setProjectionPerspective) {
+          runtimeContext.setProjectionPerspective(30, aspect, 1, 1000)
+          runtimeContext.setCameraLookAt(20, 20, 20, 0, 0, 0, 0, 1, 0)
+        } else {
+          effekseerApi.setProjectionPerspective?.(30, aspect, 1, 1000)
+          effekseerApi.setCameraLookAt?.(20, 20, 20, 0, 0, 0, 0, 1, 0)
+        }
       }
     }
 
@@ -177,8 +185,16 @@ if (!canvas || !effekseerApi) {
 
       if (playContinuously || pendingFrames > 0) {
         gl.viewport(0, 0, canvas.width, canvas.height)
-        gl.clearColor(background.r, background.g, background.b, background.a)
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+        if (threeRenderer && threeScene && threeCamera) {
+          threeRenderer.render(threeScene, threeCamera)
+          if (runtimeContext?.setProjectionMatrix) {
+            runtimeContext.setProjectionMatrix(threeCamera.projectionMatrix.elements)
+            runtimeContext.setCameraMatrix(threeCamera.matrixWorldInverse.elements)
+          }
+        } else {
+          gl.clearColor(background.r, background.g, background.b, background.a)
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+        }
 
         if (runtimeContext?.update && runtimeContext?.draw) {
           runtimeContext.update(deltaFrames || 1.0)
@@ -280,6 +296,28 @@ if (!canvas || !effekseerApi) {
       const ctx = effekseerApi.createContext()
       if (!ctx) {
         throw new Error('createContext() returned null. Runtime not initialized.')
+      }
+
+      if (window.THREE && window.THREE.WebGLRenderer) {
+        const renderer = new window.THREE.WebGLRenderer({ canvas, preserveDrawingBuffer: true })
+        renderer.setSize(canvas.width, canvas.height, false)
+        threeRenderer = renderer
+        threeScene = new window.THREE.Scene()
+        threeCamera = new window.THREE.PerspectiveCamera(
+          30,
+          Math.max(0.001, canvas.width / canvas.height),
+          1,
+          1000
+        )
+        threeCamera.position.set(20, 20, 20)
+        threeCamera.lookAt(new window.THREE.Vector3(0, 0, 0))
+        gl = renderer.getContext()
+
+        const grid = new window.THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
+        threeScene.add(grid)
+        const directionalLight = new window.THREE.DirectionalLight(0xffffff)
+        directionalLight.position.set(0, 0.7, 0.7)
+        threeScene.add(directionalLight)
       }
 
       ctx.init(gl)
