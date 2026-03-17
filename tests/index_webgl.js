@@ -13,7 +13,7 @@ const logLine = (message) => {
   }
 }
 
-logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:46Z')
+logLine('BUILD_TAG: index_webgl.js 2026-03-17T17:55Z')
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || ''
@@ -72,12 +72,12 @@ function main() {
   const context = effekseer.createContext()
   context.init(renderer.getContext())
 
-  const fastRenderMode = false
+  const fastRenderMode = true
   if (fastRenderMode) {
     context.setRestorationOfStatesFlag(false)
   }
 
-  const effectPath = 'Resources/Arrow1.efkwg'
+  const effectPath = 'Resources/blood.efkefc'
   logLine(`loadEffect: ${effectPath}`)
   let effectReady = false
   const effect = context.loadEffect(effectPath, 1.0, () => {
@@ -87,10 +87,10 @@ function main() {
     if (handle) {
       handle.setLocation(0, 0, 0)
       if (handle.setScale) {
-        handle.setScale(3, 3, 3)
+        handle.setScale(5, 5, 5)
       }
       window.latestHandle = handle
-      setStatus('Play: Arrow1.efkwg')
+      setStatus('Play: blood.efkefc')
       logLine('handle created: true')
     } else {
       logLine('play returned null handle')
@@ -107,20 +107,20 @@ function main() {
   if (buttons) {
     const btn = document.createElement('input')
     btn.type = 'button'
-    btn.value = 'Arrow1.efkwg'
-    btn.id = 'Arrow1.efkwg'
+    btn.value = 'blood.efkefc'
+    btn.id = 'blood.efkefc'
     btn.addEventListener('click', () => {
       if (!effectReady) {
         logLine('play blocked: effect not ready yet')
         return
       }
-      setStatus('Play: Arrow1.efkwg')
-      logLine('play: Arrow1.efkwg')
+      setStatus('Play: blood.efkefc')
+      logLine('play: blood.efkefc')
       const handle = context.play(effect)
       if (handle) {
         handle.setLocation(0, 0, 0)
         if (handle.setScale) {
-          handle.setScale(3, 3, 3)
+          handle.setScale(5, 5, 5)
         }
         window.latestHandle = handle
       } else {
@@ -135,9 +135,16 @@ function main() {
 
     context.update(clock.getDelta() * 60.0)
     renderer.render(scene, camera)
+    if (typeof renderer.clearDepth === 'function') {
+      renderer.clearDepth()
+    }
     context.setProjectionMatrix(camera.projectionMatrix.elements)
     context.setCameraMatrix(camera.matrixWorldInverse.elements)
     context.draw()
+
+    if (fastRenderMode && typeof renderer.resetState === 'function') {
+      renderer.resetState()
+    }
   }
 
   logLine('renderLoop start')
