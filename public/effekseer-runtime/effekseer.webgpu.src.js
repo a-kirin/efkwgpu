@@ -15,6 +15,11 @@ const effekseer = (() => {
   const debugWarn = (...args) => { console.warn(...args); };
   const debugInfo = (...args) => { if (LOG_ENABLED) console.info(...args); };
   const debugError = (...args) => { console.error(...args); };
+  const resourceTrace = (...args) => {
+    if (globalThis.__EFFEKSEER_RESOURCE_TRACE__ === true) {
+      console.log(...args);
+    }
+  };
 
   const toArrayBuffer = (data) => {
     if (data instanceof ArrayBuffer) {
@@ -726,10 +731,19 @@ const effekseer = (() => {
 
       let res = effect.resources.find((r) => r.path === path);
       if (res) {
+        if (effect.packageOnly) {
+          res.isRequired = true;
+        }
         return res.isLoaded ? res.buffer : null;
       }
 
-      res = { path, isLoaded: false, buffer: null, isRequired: !!isRequired };
+      res = {
+        path,
+        isLoaded: false,
+        buffer: null,
+        // In efkwgpk mode all declared resources must resolve from package aliases.
+        isRequired: effect.packageOnly ? true : !!isRequired
+      };
       effect.resources.push(res);
 
       const normalizePath = (value) => String(value || "").replace(/\\/g, "/");
@@ -819,6 +833,9 @@ const effekseer = (() => {
           if (inlineBuffer != null) {
             res.buffer = inlineBuffer;
             res.isLoaded = true;
+            resourceTrace(
+              `[EffekseerWebGPU] PackageResource HIT raw='${path}' candidate='${candidate}' resolved='${resolvedPath}' bytes=${inlineBuffer.byteLength || 0}`
+            );
             return inlineBuffer;
           }
 
@@ -857,6 +874,9 @@ const effekseer = (() => {
         if (inlineBuffer != null) {
           res.buffer = inlineBuffer;
           res.isLoaded = true;
+          resourceTrace(
+            `[EffekseerWebGPU] PackageResource HIT(raw-async) raw='${path}' candidate='${candidate}' resolved='${resolvedPath}' bytes=${inlineBuffer.byteLength || 0}`
+          );
           Promise.resolve().then(() => effect._update());
           return null;
         }
@@ -1157,6 +1177,9 @@ const effekseer = (() => {
           }
 
           resourceAliasMap.set(normalizedPath, alias);
+          resourceTrace(
+            `[EffekseerWebGPU] PackageAlias '${normalizedPath}' -> '${alias}'`
+          );
         }
         debugInfo("[EffekseerWebGPU] efkwgpk resources preloaded", {
           sourcePath,

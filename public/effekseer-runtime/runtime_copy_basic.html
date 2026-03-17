@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Effekseer WebGPU Copy - Basic</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #0b0f14; color: #d8e1ea; font-family: Consolas, monospace; }
+    #canvas { width: 100vw; height: 100vh; display: block; }
+    #hud { position: fixed; left: 12px; top: 12px; background: rgba(0,0,0,0.55); border: 1px solid #2e3a46; padding: 8px 10px; font-size: 12px; }
+    #status { color: #89d185; }
+    #error { color: #ff8f8f; white-space: pre-wrap; max-width: 780px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="hud">
+    <div><b>WebGPU COPY runtime</b></div>
+    <div id="status">Inicializando...</div>
+    <div id="metrics"></div>
+    <div id="error"></div>
+  </div>
+
+  <script src="../../../Effekseer/Examples/WebGPU/fflate.umd.js"></script>
+  <script src="./Effekseer_WebGPU_Runtime.js"></script>
+  <script src="./effekseer.webgpu.src.js"></script>
+  <script>
+    (async () => {
+      const PERF_DPR = 1.0;
+      const EFFECT_SCALE = 5;
+      const canvas = document.getElementById("canvas");
+      const statusEl = document.getElementById("status");
+      const metricsEl = document.getElementById("metrics");
+      const errorEl = document.getElementById("error");
+      let ctx = null;
+      let effect = null;
+      let started = false;
+      let currentHandle = null;
+      let startedAt = performance.now();
+      let lastProfileDumpAt = 0;
+      let lastFrameAt = 0;
+      const BASE_FPS = 60.0;
+      const MAX_DELTA_FRAMES = 3.0;
+
+      const getMs = (fn) => {
+        if (!ctx || typeof ctx[fn] !== "function") return null;
+        return ctx[fn]() / 1000.0;
+      };
+
+      const dumpProfile = () => {
+        const row = {
+          draw_ms: getMs("getDrawTime"),
+          update_ms: getMs("getUpdateTime"),
+          mgr_container_ms: getMs("getManagerProfileContainerDrawTime"),
+          mgr_canDraw_ms: getMs("getManagerProfileCanDrawTime"),
+          mgr_gpuParticle_ms: getMs("getManagerProfileGpuParticleTime"),
+          r_bind_ms: getMs("getRendererProfileBindGroupTime"),
+          r_state_ms: getMs("getRendererProfileSetStateTime"),
+          r_issue_ms: getMs("getRendererProfileIssueDrawTime"),
+          r_total_ms: getMs("getRendererProfileDrawTotalTime"),
+          draw_calls: typeof ctx?.getDrawCallCount === "function" ? ctx.getDrawCallCount() : null,
+          particles: typeof ctx?.getTotalParticleCount === "function" ? ctx.getTotalParticleCount() : null,
+        };
+        console.table(row);
+        return row;
+      };
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, PERF_DPR);
+        canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+        canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+        if (ctx && typeof ctx.setProjectionPerspective === "function") {
+          const aspect = Math.max(0.001, canvas.width / canvas.height);
+          ctx.setProjectionPerspective(60, aspect, 0.1, 200);
+          ctx.setCameraLookAt?.(0, 7, 60, 0, 1, 0, 0, 1, 0);
+        }
+      }
+      window.addEventListener("resize", resize);
+      resize();
+
+      try {
+        await effekseer.initRuntime("./Effekseer_WebGPU_Runtime.wasm");
+        statusEl.textContent = "Runtime cargado (build desde COPY)";
+
+        ctx = effekseer.createContext();
+        if (!ctx) throw new Error("createContext() devolvio null");
+
+        const ok = ctx.init(canvas, {
+          linearColorSpace: false,
+          instanceMaxCount: 20000,
+          squareMaxCount: 100000
+        });
+        if (!ok) throw new Error("ctx.init() fallo");
+        window.__ctx = ctx;
+        window.dumpEffekseerProfile = dumpProfile;
+        resize();
+
+        if (typeof ctx.loadEffect !== "function" || typeof ctx.play !== "function") {
+          throw new Error("Esta build requiere API loadEffect/play");
+        }
+
+        const effectPath = "./blood.efkwgpk";
+        statusEl.textContent = "Cargando: " + effectPath;
+
+        const response = await fetch(effectPath);
+        if (!response.ok) throw new Error(`No se pudo descargar ${effectPath} (HTTP ${response.status})`);
+        const effectBytes = new Uint8Array(await response.arrayBuffer());
+        statusEl.textContent = `Cargando: ${effectPath} (${effectBytes.byteLength} bytes, fflate=${typeof fflate !== "undefined" ? "yes" : "no"})`;
+
+        effect = ctx.loadEffect(
+          effectBytes,
+          EFFECT_SCALE,
+          () => {
+            started = true;
+            statusEl.textContent = "OK. Effect loaded.";
+          },
+          (msg, path) => {
+            statusEl.textContent = "Fallo";
+            errorEl.textContent = `${msg}${path ? ` | ${path}` : ""}`;
+          }
+        );
+        if (!effect) throw new Error("ctx.loadEffect devolvio null");
+
+        const playOne = () => {
+          if (typeof ctx.stopAll === "function") {
+            ctx.stopAll();
+          }
+          currentHandle = ctx.play(effect, 0, 0, 0);
+        };
+
+        playOne();
+        window.addEventListener("keydown", (e) => {
+          if (e.key === "b" || e.key === "B" || e.code === "Space") {
+            playOne();
+          } else if (e.key === "p" || e.key === "P") {
+            dumpProfile();
+          }
+        });
+
+        statusEl.textContent = "OK. 1 blood activo (B/Space reinicia, P=profile)";
+        const loop = (t) => {
+          if (lastFrameAt === 0) {
+            lastFrameAt = t;
+          }
+          const dtMs = Math.max(0.0, t - lastFrameAt);
+          lastFrameAt = t;
+          let deltaFrames = dtMs / (1000.0 / BASE_FPS);
+          if (!Number.isFinite(deltaFrames) || deltaFrames <= 0.0) {
+            deltaFrames = 1.0;
+          }
+          deltaFrames = Math.min(deltaFrames, MAX_DELTA_FRAMES);
+
+          ctx.update(deltaFrames);
+          ctx.draw();
+          if (metricsEl) {
+            const drawCalls = typeof ctx.getDrawCallCount === "function" ? ctx.getDrawCallCount() : -1;
+            const particles = typeof ctx.getTotalParticleCount === "function" ? ctx.getTotalParticleCount() : -1;
+            const rest = typeof ctx.getRestInstancesCount === "function" ? ctx.getRestInstancesCount() : -1;
+            const drawMs = typeof ctx.getDrawTime === "function" ? (ctx.getDrawTime() / 1000).toFixed(2) : "n/a";
+            const upMs = typeof ctx.getUpdateTime === "function" ? (ctx.getUpdateTime() / 1000).toFixed(2) : "n/a";
+            const mgrContainerMs = getMs("getManagerProfileContainerDrawTime");
+            const rStateMs = getMs("getRendererProfileSetStateTime");
+            const sec = ((t - startedAt) / 1000).toFixed(1);
+            const loaded = !!(effect && effect.isLoaded);
+            const nativeptr = effect && typeof effect.nativeptr === "number" ? effect.nativeptr : -1;
+            const alive = currentHandle && typeof currentHandle.exists !== "undefined" ? (currentHandle.exists ? "yes" : "no") : "n/a";
+            const resTotal = effect && Array.isArray(effect.resources) ? effect.resources.length : -1;
+            const resLoaded = effect && Array.isArray(effect.resources)
+              ? effect.resources.filter((r) => r && r.isLoaded).length
+              : -1;
+            metricsEl.textContent =
+              `t=${sec}s | loaded=${loaded} | native=${nativeptr} | alive=${alive} | res=${resLoaded}/${resTotal} | drawCalls=${drawCalls} | particles=${particles} | rest=${rest} | dt=${deltaFrames.toFixed(2)}f | update=${upMs}ms | draw=${drawMs}ms | mgrContainer=${mgrContainerMs != null ? mgrContainerMs.toFixed(2) : "n/a"}ms | rState=${rStateMs != null ? rStateMs.toFixed(2) : "n/a"}ms`;
+
+            // Auto-dump profile once per second when frame draw cost spikes.
+            if (typeof ctx.getDrawTime === "function") {
+              const drawNowMs = ctx.getDrawTime() / 1000.0;
+              if (drawNowMs >= 20.0 && (t - lastProfileDumpAt) >= 1000.0) {
+                console.warn(`[Effekseer] Draw spike ${drawNowMs.toFixed(2)}ms, dumping profile row`);
+                dumpProfile();
+                lastProfileDumpAt = t;
+              }
+            }
+          }
+          requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+      } catch (err) {
+        statusEl.textContent = "Fallo";
+        errorEl.textContent = String(err && err.stack ? err.stack : err);
+        console.error(err);
+      }
+    })();
+  </script>
+</body>
+</html>
