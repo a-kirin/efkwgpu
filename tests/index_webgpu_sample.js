@@ -18,16 +18,17 @@ const setStatus = (text) => {
   if (statusEl) statusEl.textContent = text || ''
 }
 
-logLine('BUILD_TAG: index_webgpu_sample.js 2026-03-17T18:10Z')
+logLine('BUILD_TAG: index_webgpu_sample.js 2026-03-17T18:15Z')
 
 const effects = {}
 let ctx = null
 let runtimeReady = false
 
 const effectList = [
-  { id: 'Arrow1', path: '/tests/Resources/Arrow1.efkwg' },
-  { id: 'Blow1', path: '/tests/Resources/Blow1.efkwg' },
-  { id: 'Cure1', path: '/tests/Resources/Cure1.efkwg' },
+  { id: 'Laser01', path: '/tests/Resources/Laser01.efkefc' },
+  { id: 'Laser02', path: '/tests/Resources/Laser02.efkefc' },
+  { id: 'Simple_Ring_Shape1', path: '/tests/Resources/Simple_Ring_Shape1.efkefc' },
+  { id: 'block', path: '/tests/Resources/block.efkefc' },
 ]
 
 const loadEffect = async (entry) => {
