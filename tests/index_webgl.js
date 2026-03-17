@@ -144,6 +144,7 @@ if (!canvas || !effekseerApi) {
     let playContinuously = true
     let pendingFrames = 0
     let lastFrameTime = performance.now()
+    let runtimeContext = null
 
     window.latestHandle = null
 
@@ -161,8 +162,13 @@ if (!canvas || !effekseerApi) {
       gl.viewport(0, 0, canvas.width, canvas.height)
 
       const aspect = Math.max(0.001, canvas.width / canvas.height)
-      effekseerApi.setProjectionPerspective?.(30, aspect, 1, 1000)
-      effekseerApi.setCameraLookAt?.(20, 20, 20, 0, 0, 0, 0, 1, 0)
+      if (runtimeContext?.setProjectionPerspective) {
+        runtimeContext.setProjectionPerspective(30, aspect, 1, 1000)
+        runtimeContext.setCameraLookAt(20, 20, 20, 0, 0, 0, 0, 1, 0)
+      } else {
+        effekseerApi.setProjectionPerspective?.(30, aspect, 1, 1000)
+        effekseerApi.setCameraLookAt?.(20, 20, 20, 0, 0, 0, 0, 1, 0)
+      }
     }
 
     const renderLoop = (time) => {
@@ -174,8 +180,13 @@ if (!canvas || !effekseerApi) {
         gl.clearColor(background.r, background.g, background.b, background.a)
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-        effekseerApi.update(deltaFrames || 1.0)
-        effekseerApi.draw()
+        if (runtimeContext?.update && runtimeContext?.draw) {
+          runtimeContext.update(deltaFrames || 1.0)
+          runtimeContext.draw()
+        } else {
+          effekseerApi.update(deltaFrames || 1.0)
+          effekseerApi.draw()
+        }
 
         const updateUs = effekseerApi.getUpdateTime ? effekseerApi.getUpdateTime() || 0 : 0
         const drawUs = effekseerApi.getDrawTime ? effekseerApi.getDrawTime() || 0 : 0
@@ -273,6 +284,7 @@ if (!canvas || !effekseerApi) {
 
       ctx.init(gl)
       effekseerApi.defaultContext = ctx
+      runtimeContext = ctx
       window.effekseerContext = ctx
 
       resize()
