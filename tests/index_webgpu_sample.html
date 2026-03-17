@@ -43,6 +43,14 @@
     <br />
     <div id="status"></div>
     <div id="log"></div>
+    <script src="/effekseer-runtime/fflate.umd.js"></script>
+    <script src="/effekseer-runtime/Effekseer_WebGPU_Runtime.js"></script>
+    <script src="/effekseer-runtime/effekseer.webgpu.src.js"></script>
+    <script>
+      if (typeof effekseer !== 'undefined') {
+        window.effekseer = effekseer
+      }
+    </script>
     <script type="module" src="./index_webgpu_sample.js"></script>
   </body>
 </html>
