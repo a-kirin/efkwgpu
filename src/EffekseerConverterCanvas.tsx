@@ -5,6 +5,7 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
+import { Check, LibraryBig, Sparkles } from 'lucide-react'
 import * as THREE from 'three/webgpu'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import './App.css'
@@ -29,10 +30,6 @@ type SampleEffect = {
   label: string
   path: string
   note: string
-}
-
-type WebGPUBackendWithDevice = {
-  device: GPUDevice | null
 }
 
 type ExtendedEffekseerContext = EffekseerContext & {
@@ -75,10 +72,49 @@ type RuntimeState = {
   activeEffectId: string | null
 }
 
+type RuntimeConfig = {
+  mode: 'basic' | 'composite'
+  hdrOutput: boolean
+  antialias: boolean
+  instanceMaxCount: number
+  squareMaxCount: number
+}
+
+type PersistedUiSettings = {
+  sidebarCollapsed: boolean
+  showSceneCube: boolean
+  showGrid: boolean
+  showFloor: boolean
+  showStats: boolean
+  bgColor: string
+  gridColor: string
+  floorColor: string
+  showSamplesList: boolean
+  runtimeConfig: RuntimeConfig
+}
+
 
 type IconProps = {
   size?: number
 }
+
+type MenuCheckLabelProps = {
+  label: string
+  checked?: boolean
+  description?: string
+}
+
+const MenuCheckLabel = ({ label, checked = false, description }: MenuCheckLabelProps) => (
+  <span className="menu-check-block">
+    <span className="menu-check-label">
+      <span className={`menu-check-slot ${checked ? 'checked' : ''}`} aria-hidden="true">
+        {checked ? <Check size={13} strokeWidth={2.4} /> : null}
+      </span>
+      <span>{label}</span>
+    </span>
+    {description ? <span className="menu-check-description">{description}</span> : null}
+  </span>
+)
 
 const IconPlayFilled = ({ size = 16 }: IconProps) => (
   <svg className="ctrl-icon" viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
@@ -143,6 +179,20 @@ const BUILTIN_REGISTRY = Object.fromEntries(
     },
   ])
 )
+
+const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
+  mode: 'basic',
+  hdrOutput: false,
+  antialias: false,
+  instanceMaxCount: 4000,
+  squareMaxCount: 10000,
+}
+
+const DEFAULT_FLOOR_COLOR = '#505768'
+const UI_SETTINGS_STORAGE_KEY = 'effekseer-webgpu-converter-ui-v1'
+
+let sharedWebGPUDevicePromise: Promise<GPUDevice> | null = null
+let effekseerRuntimeInitialized = false
 
 const createRuntimeState = (): RuntimeState => ({
   ctx: null,
@@ -239,23 +289,196 @@ const isHandleAlive = (handle: ExtendedEffekseerHandle | null | undefined): bool
   return handle.exists !== false
 }
 
-const requiresDependencyFolder = (fileName: string): boolean => {
+const isEfkefcSource = (fileName: string): boolean => {
   const lower = fileName.toLowerCase()
   return lower.endsWith('.efkefc')
 }
 
+const looksLikeMissingDependencyError = (message: string): boolean => {
+  if (!message) return false
+
+  const lower = message.toLowerCase()
+  const missingHints = [
+    'missing',
+    'not found',
+    'failed to load',
+    'cannot find',
+    'could not find',
+    'unresolved',
+  ]
+  const dependencyHints = [
+    'dependency',
+    'dependencies',
+    'resource',
+    'resources',
+    'texture',
+    'model',
+    'material',
+    'sound',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.dds',
+    '.tga',
+    '.bmp',
+    '.efkmodel',
+    '.mqo',
+    '.wav',
+    '.ogg',
+    '.mp3',
+  ]
+
+  return missingHints.some((hint) => lower.includes(hint)) &&
+    dependencyHints.some((hint) => lower.includes(hint))
+}
+
+const requestSharedWebGPUDevice = async (): Promise<GPUDevice> => {
+  if (sharedWebGPUDevicePromise) {
+    return sharedWebGPUDevicePromise
+  }
+
+  sharedWebGPUDevicePromise = (async () => {
+    const adapter = await navigator.gpu.requestAdapter()
+    if (!adapter) {
+      throw new Error('Unable to create WebGPU adapter.')
+    }
+
+    const features = Array.from(adapter.features.values()) as GPUFeatureName[]
+    return adapter.requestDevice({ requiredFeatures: features })
+  })()
+
+  return sharedWebGPUDevicePromise
+}
+
+const clampPositiveInt = (value: number, fallback: number): number => {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(1, Math.round(value))
+}
+
+const areRuntimeConfigsEqual = (a: RuntimeConfig, b: RuntimeConfig): boolean => (
+  a.mode === b.mode &&
+  a.hdrOutput === b.hdrOutput &&
+  a.antialias === b.antialias &&
+  a.instanceMaxCount === b.instanceMaxCount &&
+  a.squareMaxCount === b.squareMaxCount
+)
+
+const normalizeRuntimeConfig = (config: RuntimeConfig): RuntimeConfig => ({
+  mode: config.mode,
+  hdrOutput: config.hdrOutput,
+  antialias: config.antialias,
+  instanceMaxCount: clampPositiveInt(config.instanceMaxCount, DEFAULT_RUNTIME_CONFIG.instanceMaxCount),
+  squareMaxCount: clampPositiveInt(config.squareMaxCount, DEFAULT_RUNTIME_CONFIG.squareMaxCount),
+})
+
+const describeRuntimeConfigChanges = (current: RuntimeConfig, next: RuntimeConfig): string[] => {
+  const changes: string[] = []
+  if (current.mode !== next.mode) {
+    changes.push(`Pass Mode: ${next.mode === 'basic' ? 'Basic' : 'Composite'}`)
+  }
+  if (current.hdrOutput !== next.hdrOutput) {
+    changes.push(`Output: ${next.hdrOutput ? 'HDR' : 'LDR'}`)
+  }
+  if (current.antialias !== next.antialias) {
+    changes.push(`Antialias: ${next.antialias ? 'On' : 'Off'}`)
+  }
+  if (current.instanceMaxCount !== next.instanceMaxCount) {
+    changes.push(`Instance Max: ${next.instanceMaxCount}`)
+  }
+  if (current.squareMaxCount !== next.squareMaxCount) {
+    changes.push(`Square Max: ${next.squareMaxCount}`)
+  }
+  return changes
+}
+
+const sanitizeColor = (value: unknown, fallback: string): string => {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+}
+
+const readPersistedUiSettings = (): PersistedUiSettings => {
+  const defaults: PersistedUiSettings = {
+    sidebarCollapsed: false,
+    showSceneCube: true,
+    showGrid: true,
+    showFloor: false,
+    showStats: false,
+    bgColor: '#000000',
+    gridColor: '#ffffff',
+    floorColor: DEFAULT_FLOOR_COLOR,
+    showSamplesList: true,
+    runtimeConfig: DEFAULT_RUNTIME_CONFIG,
+  }
+
+  if (typeof window === 'undefined') {
+    return defaults
+  }
+
+  try {
+    const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY)
+    if (!raw) return defaults
+
+    const parsed = JSON.parse(raw) as Partial<PersistedUiSettings> | null
+    if (!parsed || typeof parsed !== 'object') return defaults
+
+    const runtimeCandidate: Partial<RuntimeConfig> = parsed.runtimeConfig && typeof parsed.runtimeConfig === 'object'
+      ? parsed.runtimeConfig as Partial<RuntimeConfig>
+      : {}
+
+    return {
+      sidebarCollapsed: typeof parsed.sidebarCollapsed === 'boolean' ? parsed.sidebarCollapsed : defaults.sidebarCollapsed,
+      showSceneCube: typeof parsed.showSceneCube === 'boolean' ? parsed.showSceneCube : defaults.showSceneCube,
+      showGrid: typeof parsed.showGrid === 'boolean' ? parsed.showGrid : defaults.showGrid,
+      showFloor: typeof parsed.showFloor === 'boolean' ? parsed.showFloor : defaults.showFloor,
+      showStats: typeof parsed.showStats === 'boolean' ? parsed.showStats : defaults.showStats,
+      bgColor: sanitizeColor(parsed.bgColor, defaults.bgColor),
+      gridColor: sanitizeColor(parsed.gridColor, defaults.gridColor),
+      floorColor: sanitizeColor(parsed.floorColor, defaults.floorColor),
+      showSamplesList: typeof parsed.showSamplesList === 'boolean' ? parsed.showSamplesList : defaults.showSamplesList,
+      runtimeConfig: normalizeRuntimeConfig({
+        mode: runtimeCandidate.mode === 'basic' || runtimeCandidate.mode === 'composite'
+          ? runtimeCandidate.mode
+          : defaults.runtimeConfig.mode,
+        hdrOutput: typeof runtimeCandidate.hdrOutput === 'boolean' ? runtimeCandidate.hdrOutput : defaults.runtimeConfig.hdrOutput,
+        antialias: typeof runtimeCandidate.antialias === 'boolean' ? runtimeCandidate.antialias : defaults.runtimeConfig.antialias,
+        instanceMaxCount: typeof runtimeCandidate.instanceMaxCount === 'number' ? runtimeCandidate.instanceMaxCount : defaults.runtimeConfig.instanceMaxCount,
+        squareMaxCount: typeof runtimeCandidate.squareMaxCount === 'number' ? runtimeCandidate.squareMaxCount : defaults.runtimeConfig.squareMaxCount,
+      }),
+    }
+  } catch {
+    return defaults
+  }
+}
+
+const writePersistedUiSettings = (settings: PersistedUiSettings) => {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 export default function EffekseerConverterCanvas() {
+  const persistedUiSettingsRef = useRef<PersistedUiSettings | null>(null)
+  if (persistedUiSettingsRef.current === null) {
+    persistedUiSettingsRef.current = readPersistedUiSettings()
+  }
+  const persistedUiSettings = persistedUiSettingsRef.current
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const cubeRef = useRef<THREE.Mesh | null>(null)
   const gridRef = useRef<THREE.GridHelper | null>(null)
+  const floorRef = useRef<THREE.Mesh | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const sourceInputRef = useRef<HTMLInputElement | null>(null)
   const depsInputRef = useRef<HTMLInputElement | null>(null)
+  const menuBarRef = useRef<HTMLElement | null>(null)
+  const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const runtimeRef = useRef<RuntimeState>(createRuntimeState())
 
   const [runtimeReady, setRuntimeReady] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(persistedUiSettings.sidebarCollapsed)
   const [activeEffectId, setActiveEffectId] = useState('')
   const [playback, setPlayback] = useState<'stopped' | 'playing' | 'paused'>('stopped')
   const [error, setError] = useState('')
@@ -266,15 +489,15 @@ export default function EffekseerConverterCanvas() {
   const [pendingAutoConvert, setPendingAutoConvert] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
   const [converting, setConverting] = useState(false)
-  const [showSceneCube, setShowSceneCube] = useState(false)
-  const [showGrid, setShowGrid] = useState(true)
-  const [showStats, setShowStats] = useState(false)
+  const [showSceneCube, setShowSceneCube] = useState(persistedUiSettings.showSceneCube)
+  const [showGrid, setShowGrid] = useState(persistedUiSettings.showGrid)
+  const [showFloor, setShowFloor] = useState(persistedUiSettings.showFloor)
+  const [showStats, setShowStats] = useState(persistedUiSettings.showStats)
   const [cpuStatus, setCpuStatus] = useState('')
-  const [bgColor, setBgColor] = useState('#000000')
-  const [gridColor, setGridColor] = useState('#ffffff')
-  const [showConvertedList, setShowConvertedList] = useState(true)
-  const [showLibraryList, setShowLibraryList] = useState(true)
-  const [showSamplesList, setShowSamplesList] = useState(true)
+  const [bgColor, setBgColor] = useState(persistedUiSettings.bgColor)
+  const [gridColor, setGridColor] = useState(persistedUiSettings.gridColor)
+  const [floorColor, setFloorColor] = useState(persistedUiSettings.floorColor)
+  const [showSamplesList, setShowSamplesList] = useState(persistedUiSettings.showSamplesList)
   const [convertedList, setConvertedList] = useState<Array<ConvertedPackage>>([])
   const [convertedPackage, setConvertedPackage] = useState<ConvertedPackage | null>(null)
   const [, setConverterStatus] = useState('Choose or drop .efkefc, .efkpkg, or .efkwgpk')
@@ -284,10 +507,16 @@ export default function EffekseerConverterCanvas() {
   const [unlockedDownloads, setUnlockedDownloads] = useState<Set<string>>(new Set())
   const [showUnlockModal, setShowUnlockModal] = useState<ConvertedPackage | null>(null)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [runtimeConfigDraft, setRuntimeConfigDraft] = useState<RuntimeConfig>(persistedUiSettings.runtimeConfig)
+  const [runtimeConfigApplied, setRuntimeConfigApplied] = useState<RuntimeConfig>(persistedUiSettings.runtimeConfig)
+  const [showCanvasResetModal, setShowCanvasResetModal] = useState(false)
+  const [pendingRuntimeConfig, setPendingRuntimeConfig] = useState<RuntimeConfig | null>(null)
 
   const useNativeConverter = true
   const injectMeshNative = true
   const showStatsRef = useRef(showStats)
+  const runtimeConfigPromptTimerRef = useRef<number | null>(null)
   const cpuStatsRef = useRef({
     accumMs: 0,
     frames: 0,
@@ -304,9 +533,45 @@ export default function EffekseerConverterCanvas() {
     }
   }, [showStats])
 
+  useEffect(() => {
+    writePersistedUiSettings({
+      sidebarCollapsed,
+      showSceneCube,
+      showGrid,
+      showFloor,
+      showStats,
+      bgColor,
+      gridColor,
+      floorColor,
+      showSamplesList,
+      runtimeConfig: runtimeConfigApplied,
+    })
+  }, [
+    bgColor,
+    floorColor,
+    gridColor,
+    runtimeConfigApplied,
+    showFloor,
+    showGrid,
+    showSamplesList,
+    showSceneCube,
+    showStats,
+    sidebarCollapsed,
+  ])
+
   const appendLog = useCallback((message: string) => {
     if (!message) return
     console.info(`[EffekseerConverter] ${message}`)
+  }, [])
+
+  const openHeaderMenu = useCallback((menu: string) => {
+    setShowProfileMenu(false)
+    setOpenMenu(menu)
+  }, [])
+
+  const toggleProfileMenu = useCallback(() => {
+    setOpenMenu(null)
+    setShowProfileMenu((current) => !current)
   }, [])
 
   const clearConvertedRegistration = useCallback(() => {
@@ -517,6 +782,11 @@ export default function EffekseerConverterCanvas() {
   }, [showGrid])
 
   useEffect(() => {
+    const floor = floorRef.current
+    if (floor) floor.visible = showFloor
+  }, [showFloor])
+
+  useEffect(() => {
     const s = sceneRef.current
     if (s) s.background = new THREE.Color(bgColor)
   }, [bgColor])
@@ -529,6 +799,88 @@ export default function EffekseerConverterCanvas() {
       grid.material.needsUpdate = true
     }
   }, [gridColor])
+
+  useEffect(() => {
+    const floor = floorRef.current
+    if (floor && floor.material instanceof THREE.MeshBasicMaterial) {
+      floor.material.color.set(floorColor)
+      floor.material.needsUpdate = true
+    }
+  }, [floorColor])
+
+  const resetView = useCallback(() => {
+    const controls = controlsRef.current
+    if (controls) {
+      controls.target.set(0, 1, 0)
+      controls.object.position.set(9, 4.5, 9)
+      controls.update()
+    }
+    setShowSceneCube(false)
+    setShowGrid(true)
+    setShowFloor(false)
+    setBgColor('#000000')
+    setGridColor('#ffffff')
+    setFloorColor(DEFAULT_FLOOR_COLOR)
+  }, [])
+
+  const queueRuntimeConfigReload = useCallback((nextConfig: RuntimeConfig) => {
+    const normalized = normalizeRuntimeConfig(nextConfig)
+    setRuntimeConfigDraft(normalized)
+    if (runtimeConfigPromptTimerRef.current !== null) {
+      window.clearTimeout(runtimeConfigPromptTimerRef.current)
+      runtimeConfigPromptTimerRef.current = null
+    }
+    if (areRuntimeConfigsEqual(normalized, runtimeConfigApplied)) {
+      setPendingRuntimeConfig(null)
+      setShowCanvasResetModal(false)
+      return
+    }
+    setPendingRuntimeConfig(normalized)
+    setShowCanvasResetModal(true)
+  }, [runtimeConfigApplied])
+
+  const scheduleRuntimeConfigReload = useCallback((nextConfig: RuntimeConfig) => {
+    setRuntimeConfigDraft(nextConfig)
+    if (runtimeConfigPromptTimerRef.current !== null) {
+      window.clearTimeout(runtimeConfigPromptTimerRef.current)
+    }
+    runtimeConfigPromptTimerRef.current = window.setTimeout(() => {
+      runtimeConfigPromptTimerRef.current = null
+      queueRuntimeConfigReload(nextConfig)
+    }, 600)
+  }, [queueRuntimeConfigReload])
+
+  const confirmCanvasReset = useCallback(() => {
+    if (runtimeConfigPromptTimerRef.current !== null) {
+      window.clearTimeout(runtimeConfigPromptTimerRef.current)
+      runtimeConfigPromptTimerRef.current = null
+    }
+    if (!pendingRuntimeConfig) {
+      setShowCanvasResetModal(false)
+      return
+    }
+    setRuntimeConfigApplied(pendingRuntimeConfig)
+    setRuntimeConfigDraft(pendingRuntimeConfig)
+    setPendingRuntimeConfig(null)
+    setShowCanvasResetModal(false)
+  }, [pendingRuntimeConfig])
+
+  const cancelCanvasReset = useCallback(() => {
+    if (runtimeConfigPromptTimerRef.current !== null) {
+      window.clearTimeout(runtimeConfigPromptTimerRef.current)
+      runtimeConfigPromptTimerRef.current = null
+    }
+    setRuntimeConfigDraft(runtimeConfigApplied)
+    setPendingRuntimeConfig(null)
+    setShowCanvasResetModal(false)
+  }, [runtimeConfigApplied])
+
+  useEffect(() => () => {
+    if (runtimeConfigPromptTimerRef.current !== null) {
+      window.clearTimeout(runtimeConfigPromptTimerRef.current)
+      runtimeConfigPromptTimerRef.current = null
+    }
+  }, [])
 
   useEffect(() => {
     if (!showStats) {
@@ -589,31 +941,36 @@ export default function EffekseerConverterCanvas() {
     controls.target.set(0, 1, 0)
     controls.update()
 
-    const grid = new THREE.GridHelper(20, 10, 0xffffff, 0xffffff)
+    const grid = new THREE.GridHelper(20, 10, gridColor, gridColor)
+    if (!Array.isArray(grid.material)) {
+      grid.material.vertexColors = false
+      grid.material.color.set(gridColor)
+      grid.material.needsUpdate = true
+    }
+    const floorGeometry = new THREE.PlaneGeometry(24, 24)
+    const floorMaterial = new THREE.MeshBasicMaterial({
+      color: floorColor,
+      side: THREE.DoubleSide,
+    })
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial)
+    floor.rotation.x = -Math.PI * 0.5
+    floor.position.y = -0.015
+    floor.visible = showFloor
     const geometry = new THREE.BoxGeometry(2, 2, 2)
     const material = new THREE.MeshBasicMaterial({ color: '#cc4c4c' })
     const cube = new THREE.Mesh(geometry, material)
     cube.visible = showSceneCube
     cubeRef.current = cube
     gridRef.current = grid
+    floorRef.current = floor
     controlsRef.current = controls
-    scene.add(grid, cube)
+    scene.add(floor, grid, cube)
 
-    const renderer = new THREE.WebGPURenderer({
-      canvas,
-      alpha: false,
-      antialias: false,
-      outputBufferType: THREE.UnsignedByteType,
-    })
-
-    runtimeRef.current = {
-      ...runtimeRef.current,
-      renderer,
-    }
+    let renderer: THREE.WebGPURenderer | null = null
 
     const resize = () => {
       const pass = runtimeRef.current.pass
-      if (!pass) return
+      if (!pass || !renderer) return
 
       const width = Math.max(1, canvas.clientWidth)
       const height = Math.max(1, canvas.clientHeight)
@@ -706,6 +1063,11 @@ export default function EffekseerConverterCanvas() {
       grid.material.dispose()
     }
 
+    const disposeFloor = () => {
+      floorGeometry.dispose()
+      floorMaterial.dispose()
+    }
+
     const cleanup = () => {
       cancelled = true
       window.cancelAnimationFrame(frame)
@@ -722,10 +1084,12 @@ export default function EffekseerConverterCanvas() {
       geometry.dispose()
       material.dispose()
       disposeGrid()
+      disposeFloor()
       controls.dispose()
-      renderer.dispose()
+      renderer?.dispose()
       timer.dispose()
       cubeRef.current = null
+      floorRef.current = null
 
       runtimeRef.current = createRuntimeState()
       setRuntimeReady(false)
@@ -735,22 +1099,32 @@ export default function EffekseerConverterCanvas() {
     void (async () => {
       try {
         appendLog('Creating WebGPU renderer.')
+        const device = await requestSharedWebGPUDevice()
+        renderer = new THREE.WebGPURenderer({
+          canvas,
+          alpha: false,
+          antialias: runtimeConfigApplied.antialias,
+          outputBufferType: runtimeConfigApplied.hdrOutput ? THREE.HalfFloatType : THREE.UnsignedByteType,
+          device,
+        })
+        runtimeRef.current = {
+          ...runtimeRef.current,
+          renderer,
+        }
         await renderer.init()
         if (cancelled) {
           cleanup()
           return
         }
 
-        const device = (renderer.backend as unknown as WebGPUBackendWithDevice).device
-        if (!device) {
-          throw new Error('Three WebGPU backend did not expose a GPUDevice.')
-        }
-
         appendLog('Initializing Effekseer runtime.')
-        effekseerApi.setWebGPUDevice(device)
-        await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
-        ;(effekseerApi as unknown as { setLogEnabled?: (flag: boolean) => void }).setLogEnabled?.(true)
-        appendLog('Effekseer runtime native log enabled.')
+        if (!effekseerRuntimeInitialized) {
+          effekseerApi.setWebGPUDevice(device)
+          await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+          ;(effekseerApi as unknown as { setLogEnabled?: (flag: boolean) => void }).setLogEnabled?.(true)
+          effekseerRuntimeInitialized = true
+          appendLog('Effekseer runtime native log enabled.')
+        }
         if (cancelled) {
           cleanup()
           return
@@ -762,8 +1136,8 @@ export default function EffekseerConverterCanvas() {
         }
 
         const settings = {
-          instanceMaxCount: 4000,
-          squareMaxCount: 10000,
+          instanceMaxCount: runtimeConfigApplied.instanceMaxCount,
+          squareMaxCount: runtimeConfigApplied.squareMaxCount,
           externalRenderPass: true,
         }
 
@@ -776,7 +1150,7 @@ export default function EffekseerConverterCanvas() {
         }
 
         const pass = new EffekseerRenderPass(renderer, scene, camera, ctx, {
-          mode: 'basic',
+          mode: runtimeConfigApplied.mode,
           idleOptimization: true,
         })
 
@@ -807,7 +1181,7 @@ export default function EffekseerConverterCanvas() {
     })()
 
     return cleanup
-  }, [appendLog, clearConvertedRegistration, playRegisteredEffect, releaseBuiltInEffects])
+  }, [appendLog, clearConvertedRegistration, playRegisteredEffect, releaseBuiltInEffects, runtimeConfigApplied])
 
   const selectSample = useCallback((effectId: string) => {
     void playRegisteredEffect(effectId)
@@ -919,18 +1293,14 @@ export default function EffekseerConverterCanvas() {
     setConvertedPackage(null)
     setPendingAutoConvert(false)
     setConverterStatus(nextFile ? `Source: ${nextFile.name}` : 'Choose a source effect first.')
-    if (nextFile && requiresDependencyFolder(nextFile.name)) {
-      requestDepsFolder(nextFile.name, { openPicker: true })
-    } else {
-      setShowDepsPrompt(false)
-      setDepsPromptSource('')
-      setLoadingMessage('')
-      setPendingAutoConvert(!!nextFile)
-    }
+    setShowDepsPrompt(false)
+    setDepsPromptSource('')
+    setLoadingMessage('')
+    setPendingAutoConvert(!!nextFile)
     if (sourceInputRef.current) {
       sourceInputRef.current.value = ''
     }
-  }, [requestDepsFolder])
+  }, [])
 
   const handleDepsChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? [])
@@ -941,11 +1311,11 @@ export default function EffekseerConverterCanvas() {
       setError('')
       setConverterStatus(`Resources selected: ${files.length} files`)
       appendLog(`Resources selected for ${sourceFile?.name ?? depsPromptSource}: ${files.length} files.`)
-      if (sourceFile && requiresDependencyFolder(sourceFile.name)) {
+      if (sourceFile && isEfkefcSource(sourceFile.name)) {
         setPendingAutoConvert(true)
       }
-    } else if (sourceFile && requiresDependencyFolder(sourceFile.name)) {
-      setConverterStatus(`"${sourceFile.name}" still needs a dependency folder.`)
+    } else if (sourceFile) {
+      setConverterStatus(`Source: ${sourceFile.name}`)
     }
   }, [appendLog, depsPromptSource, sourceFile])
 
@@ -956,20 +1326,11 @@ export default function EffekseerConverterCanvas() {
     }
     if (converting) return
 
-    if (requiresDependencyFolder(sourceFile.name) && depsFiles.length === 0) {
-      const message = 'This .efkefc references external resources. Choose dependency folder first (Texture/Model/Material/Sound).'
-      setError(message)
-      setConverterStatus(message)
-      appendLog(message)
-      requestDepsFolder(sourceFile.name)
-      return
-    }
-
     setConverting(true)
-    setLoadingMessage(`Converting package: ${sourceFile.name}`)
+    setLoadingMessage(`Loading package: ${sourceFile.name}`)
     setError('')
-    setConverterStatus(`Converting ${sourceFile.name}...`)
-    appendLog(`Converting ${sourceFile.name}`)
+    setConverterStatus(`Loading ${sourceFile.name}...`)
+    appendLog(`Loading ${sourceFile.name}`)
 
     try {
       const sourceBuffer = await sourceFile.arrayBuffer()
@@ -988,6 +1349,7 @@ export default function EffekseerConverterCanvas() {
 
       let result: ConvertedPackage
       let backendTag = 'js'
+      let shouldPersistResult = true
       if (canUseNative) {
         try {
           appendLog('Running native converter API.')
@@ -1016,12 +1378,6 @@ export default function EffekseerConverterCanvas() {
         result = await convertToEfwgpk(sourceFile.name, sourceBuffer, extraFiles)
       }
 
-      setConvertedPackage(result)
-      setConvertedList((prev) => {
-        const exists = prev.some((item) => item.outputName === result.outputName)
-        if (exists) return prev.map((item) => item.outputName === result.outputName ? result : item)
-        return [...prev, result]
-      })
       setConverterStatus(
         `[${backendTag}] ${result.outputName}  ${result.entries} entries  ${(result.bytes.byteLength / 1024).toFixed(1)} KB  deps:${extraFiles.length}/${result.depsPacked}`
       )
@@ -1043,16 +1399,35 @@ export default function EffekseerConverterCanvas() {
           await loadConvertedPreview(result)
         } catch (previewCause) {
           const previewMessage = previewCause instanceof Error ? previewCause.message : String(previewCause)
-          setError(previewMessage)
-          appendLog(previewMessage)
+          if (depsFiles.length === 0 && isEfkefcSource(sourceFile.name) && looksLikeMissingDependencyError(previewMessage)) {
+            shouldPersistResult = false
+            appendLog(`Preview requires dependency folder: ${previewMessage}`)
+            requestDepsFolder(sourceFile.name)
+          } else {
+            setError(previewMessage)
+            appendLog(previewMessage)
+          }
         }
+      }
+      if (shouldPersistResult) {
+        setConvertedPackage(result)
+        setConvertedList((prev) => {
+          const exists = prev.some((item) => item.outputName === result.outputName)
+          if (exists) return prev.map((item) => item.outputName === result.outputName ? result : item)
+          return [...prev, result]
+        })
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      setConvertedPackage(null)
-      setError(message)
-      setConverterStatus(message)
       appendLog(message)
+      if (depsFiles.length === 0 && isEfkefcSource(sourceFile.name) && looksLikeMissingDependencyError(message)) {
+        setConvertedPackage(null)
+        requestDepsFolder(sourceFile.name)
+      } else {
+        setConvertedPackage(null)
+        setError(message)
+        setConverterStatus(message)
+      }
     } finally {
       setLoadingMessage('')
       setConverting(false)
@@ -1066,7 +1441,6 @@ export default function EffekseerConverterCanvas() {
       return
     }
     if (converting) return
-    if (requiresDependencyFolder(sourceFile.name) && depsFiles.length === 0) return
     setPendingAutoConvert(false)
     void runConvert({ autoLoad: true })
   }, [converting, depsFiles, pendingAutoConvert, runConvert, sourceFile])
@@ -1099,9 +1473,105 @@ export default function EffekseerConverterCanvas() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [togglePlayback])
 
-  const lockedConvertedList = convertedList.filter((item) => !unlockedDownloads.has(item.outputName))
-  const libraryList = convertedList.filter((item) => unlockedDownloads.has(item.outputName))
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const menuBar = menuBarRef.current
+      const profileMenu = profileMenuRef.current
+      if (event.target instanceof Node) {
+        if (menuBar?.contains(event.target)) return
+        if (profileMenu?.contains(event.target)) return
+      }
+      setOpenMenu(null)
+      setShowProfileMenu(false)
+    }
 
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenMenu(null)
+        setShowProfileMenu(false)
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    window.addEventListener('keydown', handleEscape)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+      window.removeEventListener('keydown', handleEscape)
+    }
+  }, [])
+
+  const libraryEntries = convertedList
+  const unlockedLibraryEntries = libraryEntries.filter((item) => unlockedDownloads.has(item.outputName))
+  const loadedLibraryEntries = libraryEntries.filter((item) => !unlockedDownloads.has(item.outputName))
+  const pendingRuntimeChanges = pendingRuntimeConfig
+    ? describeRuntimeConfigChanges(runtimeConfigApplied, pendingRuntimeConfig)
+    : []
+  const renderLibraryItem = (item: ConvertedPackage, unlocked: boolean) => {
+    const active = activeEffectId === 'converted-preview' && convertedPackage?.outputName === item.outputName
+    return (
+      <div
+        key={item.outputName}
+        className={`converted-item ${active ? 'active' : ''} ${unlocked ? 'library-item-unlocked' : ''}`}
+        onClick={() => {
+          setConvertedPackage(item)
+          void loadConvertedPreview(item)
+        }}
+      >
+        <span className={`converted-name ${unlocked ? 'library-item-name-unlocked' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {unlocked ? (
+            <span className="library-item-effect-icon" aria-hidden="true">
+              <Sparkles size={12} strokeWidth={2} fill="currentColor" />
+            </span>
+          ) : null}
+          {(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring(0, (item.downloadOutputName || item.outputName).indexOf('.')) : (item.downloadOutputName || item.outputName)}
+          <span className="ext-label">{(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring((item.downloadOutputName || item.outputName).indexOf('.')) : ''}</span>
+        </span>
+        <button
+          type="button"
+          className={`converted-action ${unlocked ? 'unlocked' : 'locked'}`}
+          title={unlocked ? `Download ${item.downloadOutputName || item.outputName}` : `Unlock ${item.downloadOutputName || item.outputName}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (unlocked) {
+              const targetBytes = item.downloadBytes || item.bytes
+              const url = URL.createObjectURL(
+                new Blob([toArrayBuffer(targetBytes)], { type: 'application/octet-stream' })
+              )
+              const link = document.createElement('a')
+              link.href = url
+              link.download = item.downloadOutputName || item.outputName
+              link.click()
+              URL.revokeObjectURL(url)
+            } else {
+              setShowUnlockModal(item)
+            }
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1v9m0 0L5 7m3 3l3-3M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="converted-action converted-remove"
+          title={`Remove ${item.outputName}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setConvertedList((prev) => prev.filter((p) => p.outputName !== item.outputName))
+            if (convertedPackage?.outputName === item.outputName) {
+              setConvertedPackage(null)
+              clearConvertedRegistration()
+              setPlayback('stopped')
+            }
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </svg>
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="app-root">
       <header className="app-header">
@@ -1117,15 +1587,15 @@ export default function EffekseerConverterCanvas() {
         <div className="header-profile">
           <div className="credit-pill" title="Current Balance">
             <span className="coin-icon" style={{ display: 'inline-flex' }}>
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" color="#daa520">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" color="#7aa2ff">
                 <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" fill="rgba(218,165,32,0.2)"/>
                 <path d="M8 4V12M6 6H10M6 10H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
             </span>
             {credits} <span className="credit-label">Credits</span>
           </div>
-          <div className="profile-dropdown-container">
-            <button className="profile-btn" onClick={() => setShowProfileMenu(!showProfileMenu)}>
+          <div ref={profileMenuRef} className="profile-dropdown-container">
+            <button className="profile-btn" onClick={toggleProfileMenu}>
               <div className="avatar">
                 <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Max&backgroundColor=c0aede" alt="Profile" />
               </div>
@@ -1145,8 +1615,11 @@ export default function EffekseerConverterCanvas() {
         </div>
       </header>
 
-      <nav className="menu-bar">
-        <div className="menu-item">
+      <nav ref={menuBarRef} className="menu-bar">
+        <div
+          className={`menu-item ${openMenu === 'file' ? 'open' : ''}`}
+          onMouseEnter={() => openHeaderMenu('file')}
+        >
           File
           <div className="menu-dropdown">
             <button type="button" className="menu-action" onClick={() => sourceInputRef.current?.click()}>
@@ -1158,84 +1631,138 @@ export default function EffekseerConverterCanvas() {
             </button>
           </div>
         </div>
-        <div className="menu-item">
+        <div
+          className={`menu-item ${openMenu === 'view' ? 'open' : ''}`}
+          onMouseEnter={() => openHeaderMenu('view')}
+        >
           View
           <div className="menu-dropdown">
-            <button type="button" className="menu-action" onClick={() => {
-              const controls = controlsRef.current
-              if (controls) {
-                controls.target.set(0, 1, 0)
-                controls.object.position.set(9, 4.5, 9)
-                controls.update()
-              }
-              setShowSceneCube(false)
-              setShowGrid(true)
-              setBgColor('#000000')
-              setGridColor('#ffffff')
-            }}>
-              <span>{'\u2002\u2002'}Reset View</span>
+            <button type="button" className="menu-action" onClick={resetView}>
+              <MenuCheckLabel label="Reset View" />
             </button>
             <div className="menu-sep" />
             <button type="button" className="menu-action" onClick={() => setShowSceneCube((v) => !v)}>
-              <span>{showSceneCube ? '✓ Cube' : '\u2002\u2002Cube'}</span>
+              <MenuCheckLabel label="Cube" checked={showSceneCube} />
             </button>
             <div className="menu-action" onClick={(e) => {
               if ((e.target as HTMLElement).tagName !== 'INPUT') {
                 setShowGrid((v) => !v)
               }
             }}>
-              <span>{showGrid ? '✓ Grid' : '\u2002\u2002Grid'}</span>
+              <MenuCheckLabel label="Grid" checked={showGrid} />
               <input type="color" value={gridColor} onChange={(e) => setGridColor(e.target.value)} className="menu-color-input" title="Grid Color" />
             </div>
+            <div className="menu-action" onClick={(e) => {
+              if ((e.target as HTMLElement).tagName !== 'INPUT') {
+                setShowFloor((v) => !v)
+              }
+            }}>
+              <MenuCheckLabel label="Floor" checked={showFloor} />
+              <input type="color" value={floorColor} onChange={(e) => setFloorColor(e.target.value)} className="menu-color-input" title="Floor Color" />
+            </div>
             <label className="menu-action menu-color">
-              <span>{'\u2002\u2002'}Background</span>
+              <MenuCheckLabel label="Background" />
               <input type="color" value={bgColor} onChange={(e) => setBgColor(e.target.value)} className="menu-color-input" />
             </label>
             <div className="menu-sep" />
             <button type="button" className="menu-action" onClick={() => setShowStats((v) => !v)}>
-              <span>{showStats ? '✓ Stats' : '\u2002\u2002Stats'}</span>
+              <MenuCheckLabel label="Stats" checked={showStats} />
             </button>
             <div className="menu-sep" />
             <button type="button" className="menu-action" onClick={() => setSidebarCollapsed((v) => !v)}>
-              <span>{'\u2002\u2002'}{sidebarCollapsed ? 'Show Sidebar' : 'Hide Sidebar'}</span>
+              <MenuCheckLabel label={sidebarCollapsed ? 'Show Sidebar' : 'Hide Sidebar'} />
             </button>
           </div>
         </div>
-        <div className="menu-item">
-          Library
+        <div
+          className={`menu-item ${openMenu === 'canvas' ? 'open' : ''}`}
+          onMouseEnter={() => openHeaderMenu('canvas')}
+        >
+          Renderer
           <div className="menu-dropdown">
-            {libraryList.length === 0 ? (
-              <div className="menu-action" style={{ color: '#666', cursor: 'default' }}>
-                <span>No unlocked effects yet</span>
-              </div>
-            ) : (
-              libraryList.map((item) => {
-                const active = activeEffectId === 'converted-preview' && convertedPackage?.outputName === item.outputName
-                return (
-                  <button 
-                    key={item.outputName} 
-                    type="button" 
-                    className="menu-action" 
-                    onClick={() => {
-                      setConvertedPackage(item)
-                      void loadConvertedPreview(item)
-                    }}
-                    style={{ color: active ? '#daa520' : undefined }}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#daa520' }}>
-                        <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-                        <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
-                      </svg>
-                      {(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring(0, (item.downloadOutputName || item.outputName).indexOf('.')) : (item.downloadOutputName || item.outputName)}
-                    </span>
-                  </button>
-                )
-              })
-            )}
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, mode: 'basic' })}>
+              <MenuCheckLabel
+                label="Basic Pass"
+                checked={runtimeConfigDraft.mode === 'basic'}
+                description="Lower overhead"
+              />
+            </button>
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, mode: 'composite' })}>
+              <MenuCheckLabel
+                label="Composite Pass"
+                checked={runtimeConfigDraft.mode === 'composite'}
+                description="Supports soft particles and distortion"
+              />
+            </button>
+            <div className="menu-sep" />
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, hdrOutput: false })}>
+              <MenuCheckLabel label="LDR" checked={!runtimeConfigDraft.hdrOutput} />
+            </button>
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, hdrOutput: true })}>
+              <MenuCheckLabel label="HDR" checked={runtimeConfigDraft.hdrOutput} />
+            </button>
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, antialias: !runtimeConfigDraft.antialias })}>
+              <MenuCheckLabel label="Antialias" checked={runtimeConfigDraft.antialias} />
+            </button>
+            <div className="menu-sep" />
+            <label className="menu-action menu-field">
+              <span>Instance Max</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={runtimeConfigDraft.instanceMaxCount}
+                onChange={(event) => setRuntimeConfigDraft((current) => ({
+                  ...current,
+                  instanceMaxCount: Number(event.target.value),
+                }))}
+                onBlur={(event) => scheduleRuntimeConfigReload({
+                  ...runtimeConfigDraft,
+                  instanceMaxCount: Number(event.currentTarget.value),
+                })}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.currentTarget.blur()
+                  } else if (event.key === 'Escape') {
+                    cancelCanvasReset()
+                    event.currentTarget.blur()
+                  }
+                }}
+                className="menu-number-input"
+              />
+            </label>
+            <label className="menu-action menu-field">
+              <span>Square Max</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={runtimeConfigDraft.squareMaxCount}
+                onChange={(event) => setRuntimeConfigDraft((current) => ({
+                  ...current,
+                  squareMaxCount: Number(event.target.value),
+                }))}
+                onBlur={(event) => scheduleRuntimeConfigReload({
+                  ...runtimeConfigDraft,
+                  squareMaxCount: Number(event.currentTarget.value),
+                })}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.currentTarget.blur()
+                  } else if (event.key === 'Escape') {
+                    cancelCanvasReset()
+                    event.currentTarget.blur()
+                  }
+                }}
+                className="menu-number-input"
+              />
+            </label>
           </div>
         </div>
-        <div className="menu-item">
+        <div
+          className={`menu-item ${openMenu === 'help' ? 'open' : ''}`}
+          onMouseEnter={() => openHeaderMenu('help')}
+        >
           Help
           <div className="menu-dropdown">
             <button type="button" className="menu-action" disabled>
@@ -1372,182 +1899,40 @@ export default function EffekseerConverterCanvas() {
             </div>
           )}
 
-          {libraryList.length > 0 && (
-            <section className="converted-panel library-panel">
-              <div className="panel-header collapsable-header" onClick={() => setShowLibraryList((v) => !v)}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <svg style={{ transform: showLibraryList ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }} width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M5.5 3L10.5 8L5.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-                  </svg>
-                  Library
+          <section className="converted-panel library-panel">
+            <div className="library-panel-header">
+              <div className="library-panel-title-wrap">
+                <div className="library-panel-icon">
+                  <LibraryBig size={18} strokeWidth={2} />
+                </div>
+                <div>
+                  <div className="library-panel-title">Library</div>
+                  <div className="library-panel-subtitle">All converted effects live here. Downloaded items are highlighted.</div>
                 </div>
               </div>
-              {showLibraryList && (
-                <div className="converted-list">
-                  {libraryList.map((item) => {
-                    const active = activeEffectId === 'converted-preview' && convertedPackage?.outputName === item.outputName
-                    return (
-                      <div 
-                        key={item.outputName} 
-                        className={`converted-item ${active ? 'active' : ''}`}
-                        onClick={() => {
-                          setConvertedPackage(item)
-                          void loadConvertedPreview(item)
-                        }}
-                      >
-                        <span className="converted-name" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#daa520" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-                            <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
-                          </svg>
-                          {(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring(0, (item.downloadOutputName || item.outputName).indexOf('.')) : (item.downloadOutputName || item.outputName)}
-                          <span className="ext-label">{(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring((item.downloadOutputName || item.outputName).indexOf('.')) : ''}</span>
-                        </span>
-                        <button
-                          type="button"
-                          className="converted-action unlocked"
-                          title={`Download ${item.downloadOutputName || item.outputName}`}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const targetBytes = item.downloadBytes || item.bytes
-                            const url = URL.createObjectURL(
-                              new Blob([toArrayBuffer(targetBytes)], { type: 'application/octet-stream' })
-                            )
-                            const link = document.createElement('a')
-                            link.href = url
-                            link.download = item.downloadOutputName || item.outputName
-                            link.click()
-                            URL.revokeObjectURL(url)
-                          }}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M8 1v9m0 0L5 7m3 3l3-3M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          className="converted-action converted-remove"
-                          title={`Remove ${item.outputName}`}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setConvertedList((prev) => prev.filter((p) => p.outputName !== item.outputName))
-                            if (convertedPackage?.outputName === item.outputName) {
-                              setConvertedPackage(null)
-                              clearConvertedRegistration()
-                              setPlayback('stopped')
-                            }
-                          }}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
-                          </svg>
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
-          )}
-
-          {lockedConvertedList.length > 0 && (
-            <section className="converted-panel">
-              <div className="panel-header collapsable-header" onClick={() => setShowConvertedList((v) => !v)}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <svg style={{ transform: showConvertedList ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }} width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M5.5 3L10.5 8L5.5 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-                  </svg>
-                  Converted
-                </div>
-                {lockedConvertedList.length > 1 && (
-                  <button type="button" className="panel-header-action" title="Download All" onClick={(e) => e.stopPropagation()}>
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M8 1v9m0 0L5 7m3 3l3-3M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                    </svg>
-                  </button>
-                )}
+              <div className="library-panel-count">{libraryEntries.length}</div>
+            </div>
+            {libraryEntries.length === 0 ? (
+              <div className="library-empty-state">
+                You do not have any library effects yet.
               </div>
-              {showConvertedList && (
-                <div className="converted-list">
-                {lockedConvertedList.map((item) => {
-                  const active = activeEffectId === 'converted-preview' && convertedPackage?.outputName === item.outputName
-                  return (
-                  <div 
-                    key={item.outputName} 
-                    className={`converted-item ${active ? 'active' : ''}`}
-                    onClick={() => {
-                      setConvertedPackage(item)
-                      void loadConvertedPreview(item)
-                    }}
-                  >
-                    <span className="converted-name" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      {unlockedDownloads.has(item.outputName) && (
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#daa520" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-                          <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
-                        </svg>
-                      )}
-                      {(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring(0, (item.downloadOutputName || item.outputName).indexOf('.')) : (item.downloadOutputName || item.outputName)}
-                      <span className="ext-label">{(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring((item.downloadOutputName || item.outputName).indexOf('.')) : ''}</span>
-                    </span>
-                    <button
-                      type="button"
-                      className={`converted-action ${unlockedDownloads.has(item.outputName) ? 'unlocked' : 'locked'}`}
-                      title={unlockedDownloads.has(item.outputName) ? `Download ${item.downloadOutputName || item.outputName}` : `Unlock ${item.downloadOutputName || item.outputName} (1 Credit)`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (unlockedDownloads.has(item.outputName)) {
-                          const targetBytes = item.downloadBytes || item.bytes
-                          const url = URL.createObjectURL(
-                            new Blob([toArrayBuffer(targetBytes)], { type: 'application/octet-stream' })
-                          )
-                          const link = document.createElement('a')
-                          link.href = url
-                          link.download = item.downloadOutputName || item.outputName
-                          link.click()
-                          URL.revokeObjectURL(url)
-                        } else {
-                          setShowUnlockModal(item)
-                        }
-                      }}
-                    >
-                      {unlockedDownloads.has(item.outputName) ? (
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M8 1v9m0 0L5 7m3 3l3-3M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                        </svg>
-                      ) : (
-                        <div style={{display: 'flex', alignItems: 'center', gap: '3px', fontWeight: 600, fontSize: '11px'}}>
-                          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                            <path fillRule="evenodd" d="M8 2a3.5 3.5 0 00-3.5 3.5V7h-1v7h9V7h-1V5.5A3.5 3.5 0 008 2zm2.5 5V5.5a2.5 2.5 0 00-5 0V7h5zM9 10a1 1 0 11-2 0 1 1 0 012 0z" clipRule="evenodd"/>
-                          </svg>
-                          1
-                        </div>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="converted-action converted-remove"
-                      title={`Remove ${item.outputName}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setConvertedList((prev) => prev.filter((p) => p.outputName !== item.outputName))
-                        if (convertedPackage?.outputName === item.outputName) {
-                           setConvertedPackage(null)
-                           clearConvertedRegistration()
-                           setPlayback('stopped')
-                        }
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
-                      </svg>
-                    </button>
-                  </div>
-                )})}
+            ) : (
+              <div className="converted-list">
+                {unlockedLibraryEntries.length > 0 ? (
+                  <>
+                    <div className="library-section-label">Purchased</div>
+                    {unlockedLibraryEntries.map((item) => renderLibraryItem(item, true))}
+                  </>
+                ) : null}
+                {loadedLibraryEntries.length > 0 ? (
+                  <>
+                    <div className="library-section-label">Downloaded</div>
+                    {loadedLibraryEntries.map((item) => renderLibraryItem(item, false))}
+                  </>
+                ) : null}
               </div>
-              )}
-            </section>
-          )}
+            )}
+          </section>
 
           <section className="samples-panel">
             <div className="panel-header collapsable-header" onClick={() => setShowSamplesList((v) => !v)}>
@@ -1587,6 +1972,31 @@ export default function EffekseerConverterCanvas() {
         </aside>
       </div>
 
+      {showCanvasResetModal && pendingRuntimeConfig ? (
+        <div className="modal-overlay" onClick={cancelCanvasReset}>
+          <div className="modal-content canvas-reset-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Restart Renderer?</h2>
+              <button className="modal-close" onClick={cancelCanvasReset}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>These changes require restarting the renderer.</p>
+              {pendingRuntimeChanges.length > 0 ? (
+                <ul className="canvas-reset-change-list">
+                  {pendingRuntimeChanges.map((change) => (
+                    <li key={change}>{change}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={cancelCanvasReset}>Keep Current</button>
+              <button className="btn-primary" onClick={confirmCanvasReset}>Restart Canvas</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showDepsPrompt ? (
         <div
           className="deps-modal-backdrop"
@@ -1595,12 +2005,24 @@ export default function EffekseerConverterCanvas() {
           aria-label="Select dependency folder"
           onClick={openDepsPicker}
         >
-          <div className="deps-modal">
+          <div className="deps-modal" onClick={(event) => event.stopPropagation()}>
             <div className="deps-modal-title">
               Dependency Folder Required: {depsPromptSource || sourceFile?.name || 'effect'}
             </div>
+            <div className="deps-modal-copy">
+              This effect references external resources. Choose the folder that contains its textures, models, materials, or sounds.
+            </div>
             <div className="convert-progress-bar" aria-hidden="true">
               <span />
+            </div>
+            <div className="deps-modal-actions">
+              <button
+                type="button"
+                className="conv-btn primary"
+                onClick={openDepsPicker}
+              >
+                Choose Dependency Folder
+              </button>
             </div>
           </div>
         </div>

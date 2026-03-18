@@ -55,7 +55,7 @@ active effects are detected and falls back to rendering the Three scene only.
 | Mode | Distortion | Depth Occlusion | Soft Particles | LOD | Collisions | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `basic` | No | Yes | No | No | No | Effekseer is injected into the primary scene render pass. Lowest cost path. |
-| `composite` | Yes | Yes | No | No | No | Uses scene capture for background refraction, renders the scene again into a composite target, then presents through `PostProcessing`. |
+| `composite` | Yes | Yes | Yes | No | No | Uses scene capture for background refraction, converts scene depth into an intermediate float texture for soft particles, renders the scene again into a composite target, then presents through `PostProcessing`. |
 
 ## Idle Optimization
 
@@ -74,6 +74,12 @@ when available, and falls back to runtime metrics such as
 
 ## Unsupported Features
 
-- `Soft particles`: not supported yet. The add-on does not expose a sampleable scene depth texture to Effekseer.
+- `Soft particles` in `basic`: not supported. The external render pass hook in the current Three fork does not expose a sampleable scene depth texture for the primary scene pass.
 - `LOD`: not supported. The add-on does not currently provide a Three-side feature contract for effect level-of-detail selection.
 - `Collisions`: not supported. The add-on does not currently bridge Three scene collision data or collision callbacks into Effekseer.
+
+## Soft Particles
+
+`composite` mode does not forward Three's raw `DepthTexture` directly to Effekseer. Instead, it renders the scene pass depth into an intermediate sampleable float color texture and then forwards that texture to Effekseer through `depthTextureView`.
+
+If the scene pass does not expose a depth texture, or if the intermediate float depth capture cannot be produced for the current backend/format, the add-on silently falls back to rendering Effekseer without soft particles for that frame.

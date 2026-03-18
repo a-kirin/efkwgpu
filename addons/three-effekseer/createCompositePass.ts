@@ -23,6 +23,40 @@ type SceneCaptureTrigger = {
   dispose(): void
 }
 
+type DepthCaptureTrigger = {
+  render(): void
+  resize(width: number, height: number, pixelRatio: number): void
+  dispose(): void
+}
+
+function createTextureView(texture: GPUTexture | null): GPUTextureView | null {
+  if (!texture) {
+    return null
+  }
+
+  try {
+    return texture.createView()
+  } catch {
+    return null
+  }
+}
+
+function createTextureViewFromThreeTexture(
+  renderer: THREE.WebGPURenderer,
+  texture: THREE.Texture | null
+): GPUTextureView | null {
+  if (!texture) {
+    return null
+  }
+
+  try {
+    const nativeTexture = getNativeGPUTexture(renderer, texture)
+    return createTextureView(nativeTexture)
+  } catch {
+    return null
+  }
+}
+
 function createSceneCaptureTrigger(
   renderer: THREE.WebGPURenderer,
   scenePass: ThreeEffekseerPassNodeLike,
@@ -68,6 +102,52 @@ function createSceneCaptureTrigger(
   }
 }
 
+function createSoftParticleDepthCaptureTrigger(
+  renderer: THREE.WebGPURenderer,
+  scenePass: ThreeEffekseerPassNodeLike,
+  renderTarget: THREE.RenderTarget
+): DepthCaptureTrigger {
+  const postProcessing = new THREE.PostProcessing(renderer)
+  const depthTexture = scenePass.renderTarget.depthTexture!
+  const depthNode = THREE.TSL.texture(
+    depthTexture,
+    THREE.TSL.screenUV.flipY()
+  ) as THREE.Node & { oneMinus(): THREE.Node }
+
+  postProcessing.outputColorTransform = false
+  // Effekseer WebGPU shaders read soft-particle depth as `1.0 - depthTexture`.
+  // Three's screen-space sampling path is Y-flipped under WebGPU, so sample the
+  // scene-pass depth with `screenUV.flipY()` before storing the inverted value.
+  const depthCopyNode = depthNode.oneMinus()
+  postProcessing.outputNode = THREE.TSL.vec4(depthCopyNode, depthCopyNode, depthCopyNode, 1.0)
+
+  return {
+    render() {
+      const previousRenderTarget = renderer.getRenderTarget()
+      const previousActiveCubeFace = renderer.getActiveCubeFace()
+      const previousActiveMipmapLevel = renderer.getActiveMipmapLevel()
+
+      renderer.setRenderTarget(renderTarget)
+
+      try {
+        postProcessing.render()
+      } finally {
+        renderer.setRenderTarget(
+          previousRenderTarget,
+          previousActiveCubeFace,
+          previousActiveMipmapLevel
+        )
+      }
+    },
+
+    resize() {},
+
+    dispose() {
+      postProcessing.dispose()
+    },
+  }
+}
+
 function syncScenePassResources(
   renderer: THREE.WebGPURenderer,
   scenePassResources: ThreeEffekseerScenePassResources
@@ -88,20 +168,26 @@ function syncScenePassResources(
 function createFinalPassState(
   renderer: THREE.WebGPURenderer,
   scenePassResources: ThreeEffekseerScenePassResources,
+  softParticleDepthTarget: THREE.RenderTarget | null,
   info: ExternalRenderPassHookInfo
 ): ThreeEffekseerFinalPassState | null {
   syncScenePassResources(renderer, scenePassResources)
 
   const backgroundTextureView = scenePassResources.nativeColorTextureView
+  const depthTextureView = createTextureViewFromThreeTexture(
+    renderer,
+    softParticleDepthTarget?.texture ?? null
+  )
 
   return {
     backgroundTextureView,
-    depthTextureView: null,
+    depthTextureView,
     effekseerPassState: {
       colorFormat: info.colorFormat,
       depthFormat: info.depthStencilFormat,
       sampleCount: info.sampleCount,
       ...(backgroundTextureView ? { backgroundTextureView } : {}),
+      ...(depthTextureView ? { depthTextureView } : {}),
     },
   }
 }
@@ -119,12 +205,28 @@ export default function createCompositePass(
     mode: 'composite',
     supportsDistortion: true,
     supportsDepthOcclusion: true,
-    supportsSoftParticles: false,
+    supportsSoftParticles: true,
     supportsLOD: false,
     supportsCollisions: false,
   }
   const scenePass = THREE.TSL.pass(scene, camera) as ThreeEffekseerPassNodeLike
   const sceneCaptureTrigger = createSceneCaptureTrigger(renderer, scenePass, samples)
+  const softParticleDepthTarget = new THREE.RenderTarget(1, 1, {
+    type: THREE.HalfFloatType,
+    colorSpace: THREE.LinearSRGBColorSpace,
+    depthBuffer: false,
+    samples: 0,
+  })
+  softParticleDepthTarget.texture.minFilter = THREE.NearestFilter
+  softParticleDepthTarget.texture.magFilter = THREE.NearestFilter
+  softParticleDepthTarget.texture.generateMipmaps = false
+  softParticleDepthTarget.texture.name = 'ThreeEffekseer.softParticleDepth'
+  const softParticleDepthCaptureTrigger = createSoftParticleDepthCaptureTrigger(
+    renderer,
+    scenePass,
+    softParticleDepthTarget
+  )
+  let softParticleDepthEnabled = true
   const compositionTarget = new THREE.RenderTarget(1, 1, {
     type: renderer.getOutputBufferType(),
     colorSpace: THREE.LinearSRGBColorSpace,
@@ -150,7 +252,12 @@ export default function createCompositePass(
     scene,
     camera,
     renderTarget: compositionTarget,
-    resolveCompositePassState: (_input, info) => createFinalPassState(renderer, scenePassResources, info),
+    resolveCompositePassState: (_input, info) => createFinalPassState(
+      renderer,
+      scenePassResources,
+      softParticleDepthEnabled ? softParticleDepthTarget : null,
+      info
+    ),
   })
   const presenter = createFinalPassPresenter({ renderer })
 
@@ -163,9 +270,11 @@ export default function createCompositePass(
       renderer.setPixelRatio(pixelRatio)
       renderer.setSize(width, height, false)
       renderer.getDrawingBufferSize(drawingBufferSize)
+      softParticleDepthTarget.setSize(drawingBufferSize.width, drawingBufferSize.height)
       compositionTarget.setSize(drawingBufferSize.width, drawingBufferSize.height)
       updateCameraProjection(camera, width, height)
       sceneCaptureTrigger.resize(width, height, pixelRatio)
+      softParticleDepthCaptureTrigger.resize(width, height, pixelRatio)
       compositePresenter.resize(width, height, pixelRatio)
       presenter.resize(width, height, pixelRatio)
     },
@@ -181,6 +290,13 @@ export default function createCompositePass(
         syncEffekseerCamera(camera, effekseer)
         effekseer.update(deltaFrames)
         sceneCaptureTrigger.render()
+        if (softParticleDepthEnabled) {
+          try {
+            softParticleDepthCaptureTrigger.render()
+          } catch {
+            softParticleDepthEnabled = false
+          }
+        }
         scenePassResources.renderTarget = scenePass.renderTarget
         scenePassResources.colorTexture = scenePass.renderTarget.texture
         scenePassResources.depthTexture = scenePass.renderTarget.depthTexture
@@ -197,8 +313,10 @@ export default function createCompositePass(
     dispose() {
       tracker?.dispose()
       sceneCaptureTrigger.dispose()
+      softParticleDepthCaptureTrigger.dispose()
       compositePresenter.dispose()
       presenter.dispose()
+      softParticleDepthTarget.dispose()
       compositionTarget.dispose()
     },
   }
