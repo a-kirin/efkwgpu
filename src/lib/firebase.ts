@@ -1,5 +1,12 @@
-import { initializeApp } from 'firebase/app'
-import { getAnalytics, isSupported, type Analytics } from 'firebase/analytics'
+import type firebase from 'firebase/compat/app'
+
+type FirebaseCompat = typeof firebase
+
+declare global {
+  interface Window {
+    firebase?: FirebaseCompat
+  }
+}
 
 const firebaseConfig = {
   apiKey: 'AIzaSyBluwFdBZePWtVkjyttbSKtA9y3K3m-Dxs',
@@ -11,15 +18,23 @@ const firebaseConfig = {
   measurementId: 'G-4H5BT05LT6',
 }
 
-export const firebaseApp = initializeApp(firebaseConfig)
-export let firebaseAnalytics: Analytics | null = null
+const firebaseCompat = window.firebase
 
-void isSupported()
-  .then((supported) => {
-    if (supported) {
-      firebaseAnalytics = getAnalytics(firebaseApp)
-    }
-  })
-  .catch(() => {
-    firebaseAnalytics = null
-  })
+if (!firebaseCompat) {
+  throw new Error('Firebase SDK not loaded. Check the CDN scripts in index.html.')
+}
+
+export const firebaseApp =
+  firebaseCompat.apps.length > 0
+    ? firebaseCompat.app()
+    : firebaseCompat.initializeApp(firebaseConfig)
+
+export const firebaseAuth = firebaseApp.auth()
+export const firebaseDb = firebaseApp.firestore()
+export const firebaseAnalytics = null
+
+void firebaseAuth.setPersistence(firebaseCompat.auth.Auth.Persistence.LOCAL).catch(() => {
+  // Keep default auth persistence if the browser blocks the preferred mode.
+})
+
+export default firebaseCompat

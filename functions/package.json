@@ -3,7 +3,7 @@
   "private": true,
   "main": "lib/index.js",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "scripts": {
     "build": "tsc",
@@ -11,9 +11,13 @@
     "deploy": "npm run build && firebase deploy --only functions"
   },
   "dependencies": {
+    "busboy": "^1.6.0",
+    "fflate": "^0.8.2",
+    "firebase-admin": "^13.7.0",
     "firebase-functions": "^6.6.0"
   },
   "devDependencies": {
+    "@types/busboy": "^1.5.4",
     "typescript": "^5.9.3"
   }
 }

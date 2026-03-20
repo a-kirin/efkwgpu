@@ -4,6 +4,7 @@ import moonblastUrl from './pkmoves/moonblast/moonblast.efkwg?url'
 import psychicUrl from './pkmoves/test.efkwgpk?url'
 import shadowballUrl from './pkmoves/shadowball.efkwgpk?url'
 import type { EffekseerContext, EffekseerHandle } from 'three-effekseer'
+import { EFFEKSEER_RUNTIME_WASM_URL, ensureEffekseerRuntimeLoaded } from './lib/effekseerRuntime'
 
 // Effect registry passed into Effekseer after the context is created.
 const EFFECTS = {
@@ -31,11 +32,9 @@ export default function ViewerCanvas() {
   useEffect(() => {
     // The host owns the canvas and WebGPU device. Effekseer is attached to that environment.
     const canvas = canvasRef.current
-    const effekseer = window.effekseer
-    if (!canvas || !('gpu' in navigator) || !effekseer) {
+    if (!canvas || !('gpu' in navigator)) {
       return
     }
-    const effekseerApi = effekseer
 
     // Local viewer state kept for the lifetime of this mounted integration.
     let cancelled = false
@@ -47,6 +46,7 @@ export default function ViewerCanvas() {
     let ctx: EffekseerContext | null = null
     let handle: EffekseerHandle | null = null
     let currentEffectIndex = 0
+    let effekseerApi = window.effekseer ?? null
 
     // Reconfigure the host canvas surface and then push the matching camera state into Effekseer.
     const resize = () => {
@@ -122,13 +122,22 @@ export default function ViewerCanvas() {
     }
 
     // Playback stays id-based. The viewer does not hold raw effect refs.
-    const playCurrentEffect = () => {
+    const playCurrentEffect = async () => {
       if (!ctx) {
         return
       }
 
+      const effectId = EFFECT_IDS[currentEffectIndex]
+      const loadedEffects = await ctx.whenEffectsReady([effectId])
+      if (cancelled || !loadedEffects.get(effectId)) {
+        throw new Error(`ViewerCanvas: ${effectId} failed to load.`)
+      }
+
       handle?.stop()
-      handle = ctx.playEffect(EFFECT_IDS[currentEffectIndex], 0, 0, 0)
+      handle = ctx.playEffect(effectId, 0, 0, 0)
+      if (!handle) {
+        throw new Error(`ViewerCanvas: playEffect("${effectId}") returned null.`)
+      }
     }
 
     // Input is viewer-specific. Effekseer only receives the final playEffect(id) call.
@@ -139,7 +148,9 @@ export default function ViewerCanvas() {
 
       event.preventDefault()
       currentEffectIndex = (currentEffectIndex + 1) % EFFECT_IDS.length
-      playCurrentEffect()
+      void playCurrentEffect().catch((error: unknown) => {
+        console.error(error)
+      })
     }
 
     // Boot order matters:
@@ -149,6 +160,15 @@ export default function ViewerCanvas() {
     // 4. register and preload effects
     // 5. start playback and the host render loop
     void (async () => {
+      await ensureEffekseerRuntimeLoaded()
+      if (cancelled) {
+        return
+      }
+      effekseerApi = window.effekseer ?? null
+      if (!effekseerApi) {
+        throw new Error('ViewerCanvas: Effekseer runtime did not initialize.')
+      }
+
       // Adapter and canvas context belong to the host integration, not to Effekseer.
       const adapter = await navigator.gpu.requestAdapter()
       presentationContext = canvas.getContext('webgpu') as GPUCanvasContext | null
@@ -165,7 +185,7 @@ export default function ViewerCanvas() {
       // The runtime module is initialized once and then receives the host-owned WebGPU device.
       presentationFormat = navigator.gpu.getPreferredCanvasFormat()
       effekseerApi.setWebGPUDevice(device)
-      await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+      await effekseerApi.initRuntime(EFFEKSEER_RUNTIME_WASM_URL)
       if (cancelled) {
         return
       }
@@ -211,10 +231,7 @@ export default function ViewerCanvas() {
       }
 
       // Once loading is complete, start playback and hand control to the host loop.
-      playCurrentEffect()
-      if (!handle) {
-        throw new Error(`ViewerCanvas: playEffect("${EFFECT_IDS[currentEffectIndex]}") returned null.`)
-      }
+      await playCurrentEffect()
       window.addEventListener('keydown', handleKeyDown)
       window.addEventListener('resize', resize)
       frame = window.requestAnimationFrame(render)
@@ -230,7 +247,7 @@ export default function ViewerCanvas() {
       window.removeEventListener('resize', resize)
       handle?.stop()
       ctx?.stopAll()
-      effekseerApi.releaseContext(ctx)
+      effekseerApi?.releaseContext(ctx)
     }
   }, [])
 

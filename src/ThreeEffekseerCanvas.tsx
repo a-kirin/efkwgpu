@@ -7,6 +7,7 @@ import {
   type EffekseerContext,
   type EffekseerHandle,
 } from 'three-effekseer'
+import { EFFEKSEER_RUNTIME_WASM_URL, ensureEffekseerRuntimeLoaded } from './lib/effekseerRuntime'
 
 const CAMERA = {
   fov: 45,
@@ -26,11 +27,9 @@ export default function ThreeEffekseerCanvas() {
 
   useEffect(() => {
     const canvas = canvasRef.current
-    const effekseer = window.effekseer
-    if (!canvas || !('gpu' in navigator) || !effekseer) {
+    if (!canvas || !('gpu' in navigator)) {
       return
     }
-    const effekseerApi = effekseer
 
     let cancelled = false
     let frame = 0
@@ -44,6 +43,7 @@ export default function ThreeEffekseerCanvas() {
     let material: THREE.MeshStandardMaterial | null = null
     let ctx: EffekseerContext | null = null
     let handle: EffekseerHandle | null = null
+    let effekseerApi = window.effekseer ?? null
 
     const resize = () => {
       if (!effekseerPass) {
@@ -73,6 +73,15 @@ export default function ThreeEffekseerCanvas() {
     }
 
     void (async () => {
+      await ensureEffekseerRuntimeLoaded()
+      if (cancelled) {
+        return
+      }
+      effekseerApi = window.effekseer ?? null
+      if (!effekseerApi) {
+        throw new Error('ThreeEffekseerCanvas: Effekseer runtime did not initialize.')
+      }
+
       renderer = new THREE.WebGPURenderer({
         canvas,
         alpha: false,
@@ -115,7 +124,7 @@ export default function ThreeEffekseerCanvas() {
       scene.add(ambientLight, keyLight, rimLight, mesh)
 
       effekseerApi.setWebGPUDevice(device)
-      await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+      await effekseerApi.initRuntime(EFFEKSEER_RUNTIME_WASM_URL)
       if (cancelled) {
         return
       }
@@ -167,7 +176,7 @@ export default function ThreeEffekseerCanvas() {
       window.removeEventListener('resize', resize)
       handle?.stop()
       ctx?.stopAll()
-      effekseerApi.releaseContext(ctx)
+      effekseerApi?.releaseContext(ctx)
       effekseerPass?.dispose()
       geometry?.dispose()
       material?.dispose()

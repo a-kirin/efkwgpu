@@ -1,4 +1,5 @@
 import effectUrl from './pkmoves/blood.efkwgpk?url'
+import { EFFEKSEER_RUNTIME_WASM_URL, ensureEffekseerRuntimeLoaded } from './lib/effekseerRuntime'
 
 type EffekseerHandle = {
   stop(): void
@@ -119,9 +120,14 @@ async function copyTextToClipboard(text: string): Promise<void> {
 
 async function main(): Promise<void> {
   const canvas = document.getElementById('viewer-canvas')
-  const effekseer = (window as typeof window & { effekseer?: EffekseerApi }).effekseer
 
-  if (!(canvas instanceof HTMLCanvasElement) || !('gpu' in navigator) || !effekseer) {
+  if (!(canvas instanceof HTMLCanvasElement) || !('gpu' in navigator)) {
+    setHud('WebGPU runtime not available.')
+    return
+  }
+  await ensureEffekseerRuntimeLoaded()
+  const effekseer = (window as typeof window & { effekseer?: EffekseerApi }).effekseer
+  if (!effekseer) {
     setHud('WebGPU runtime not available.')
     return
   }
@@ -169,7 +175,7 @@ async function main(): Promise<void> {
     ctx.setCameraLookAt?.(9, 4.5, 9, 0, 1, 0, 0, 1, 0)
   }
 
-  await effekseer.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+  await effekseer.initRuntime(EFFEKSEER_RUNTIME_WASM_URL)
   if (cancelled) return
 
   const ctx = effekseer.createContext()

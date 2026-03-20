@@ -5,25 +5,36 @@ import {
   useState,
   type ChangeEvent,
 } from 'react'
-import { Check, LibraryBig, Sparkles } from 'lucide-react'
+import { Check, CircleUserRound, LibraryBig, Sparkles } from 'lucide-react'
 import * as THREE from 'three/webgpu'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import './App.css'
-import testUrl from './pkmoves/test.efkwgpk?url'
-import shadowballUrl from './pkmoves/shadowball.efkwgpk?url'
-import aurahdrUrl from './pkmoves/aurahdr.efkwgpk?url'
-import bloodUrl from './pkmoves/blood.efkwgpk?url'
 import {
   EffekseerRenderPass,
   type EffekseerContext,
   type EffekseerHandle,
 } from 'three-effekseer'
 import {
-  convertToEfwgpk,
-  type ConvertedPackage,
-  type ConverterInputFile,
-} from './efwgpkConverter'
-import { convertToEfwgpkNative } from './nativeEfwgpkConverter'
+  deleteAccountArtifact,
+  consumeUnlockCredit,
+  createCreditPackCheckoutSession,
+  FunctionApiError,
+  getCurrentAccountSnapshot,
+  loadAccountArtifactBytes,
+  registerConvertedArtifact,
+  sha256Hex,
+  signInWithGoogle,
+  signOutCurrentUser,
+  startEffectConversion,
+  subscribeToAccountState,
+  usesLocalStartEffectConversion,
+  type AccountArtifactRecord,
+  type AccountUserRecord,
+  type AuthUserRecord,
+  type CreditPackId,
+  type StartEffectConversionResult,
+} from './lib/firestoreUsers'
+import { CREDIT_PACKS } from './billing/creditPacks'
 
 type SampleEffect = {
   id: string
@@ -38,7 +49,8 @@ type ExtendedEffekseerContext = EffekseerContext & {
     data: string | ArrayBuffer | Uint8Array,
     scale?: number,
     onload?: () => void,
-    onerror?: (message: string, path: string) => void
+    onerror?: (message: string, path: string) => void,
+    redirect?: (resolvedPath: string) => string
   ) => ExtendedEffekseerEffect | null
   releaseEffect?: (effect: ExtendedEffekseerEffect | null) => void
   play?: (effect: ExtendedEffekseerEffect | null, x?: number, y?: number, z?: number) => ExtendedEffekseerHandle | null
@@ -68,6 +80,8 @@ type RuntimeState = {
   pass: EffekseerRenderPass | null
   handle: ExtendedEffekseerHandle | null
   directEffect: ExtendedEffekseerEffect | null
+  pendingPreviewEffect: ExtendedEffekseerEffect | null
+  previewResourceCleanup: (() => void) | null
   builtInEffects: Map<string, ExtendedEffekseerEffect>
   activeEffectId: string | null
 }
@@ -75,13 +89,17 @@ type RuntimeState = {
 type RuntimeConfig = {
   mode: 'basic' | 'composite'
   hdrOutput: boolean
+  outputColorSpace: 'srgb' | 'linear'
   antialias: boolean
   instanceMaxCount: number
   squareMaxCount: number
 }
 
+type ViewMode = '3d' | 'xy'
+
 type PersistedUiSettings = {
   sidebarCollapsed: boolean
+  viewMode: ViewMode
   showSceneCube: boolean
   showGrid: boolean
   showFloor: boolean
@@ -93,6 +111,85 @@ type PersistedUiSettings = {
   runtimeConfig: RuntimeConfig
 }
 
+type LocalConvertedPackage = Omit<StartEffectConversionResult, 'bytes' | 'artifactId'> & {
+  bytes: Uint8Array | null
+  artifactId?: string | null
+  artifactSha256: string
+  artifactBytesLength: number
+  sourceKind: 'converted' | 'direct'
+  dependencyFiles?: DependencyImportFile[]
+}
+
+type DependencyImportFile = {
+  file: File
+  relativePath: string
+}
+
+type FileSystemHandleLike = {
+  kind: 'file' | 'directory'
+  name: string
+}
+
+type PickerStartIn = FileSystemHandleLike | 'desktop' | 'documents' | 'downloads' | 'music' | 'pictures' | 'videos'
+
+type FileSystemFileHandleLike = FileSystemHandleLike & {
+  kind: 'file'
+  getFile: () => Promise<File>
+  createWritable?: () => Promise<FileSystemWritableFileStreamLike>
+}
+
+type FileSystemWritableFileStreamLike = {
+  write: (data: Blob | BufferSource | string) => Promise<void>
+  close: () => Promise<void>
+}
+
+type FileSystemDirectoryHandleLike = FileSystemHandleLike & {
+  kind: 'directory'
+  entries: () => AsyncIterableIterator<[string, FileSystemHandleLike]>
+}
+
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (options?: { mode?: 'read' | 'readwrite'; id?: string; startIn?: PickerStartIn }) => Promise<FileSystemDirectoryHandleLike>
+  showOpenFilePicker?: (options?: {
+    id?: string
+    multiple?: boolean
+    excludeAcceptAllOption?: boolean
+    startIn?: PickerStartIn
+    types?: Array<{
+      description?: string
+      accept: Record<string, string[]>
+    }>
+  }) => Promise<FileSystemFileHandleLike[]>
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string
+    types?: Array<{
+      description?: string
+      accept: Record<string, string[]>
+    }>
+  }) => Promise<FileSystemFileHandleLike>
+}
+
+type UnlockTarget =
+  | {
+      kind: 'session'
+      item: LocalConvertedPackage
+      accountArtifact: AccountArtifactRecord | null
+    }
+  | {
+      kind: 'account'
+      artifact: AccountArtifactRecord
+    }
+
+type CheckoutResumeState = {
+  baselineCredits: number
+  lastCreditGrantOrderId: string | null
+  artifactId: string | null
+  filename: string | null
+}
+
+type DeleteArtifactDialogState = {
+  artifact: AccountArtifactRecord
+}
 
 type IconProps = {
   size?: number
@@ -103,6 +200,8 @@ type MenuCheckLabelProps = {
   checked?: boolean
   description?: string
 }
+
+const BUILTIN_SAMPLE_BASE = '/pkmoves'
 
 const MenuCheckLabel = ({ label, checked = false, description }: MenuCheckLabelProps) => (
   <span className="menu-check-block">
@@ -158,38 +257,182 @@ const IconChevronRightFilled = ({ size = 16 }: IconProps) => (
   </svg>
 )
 
-
 const SAMPLE_EFFECTS: SampleEffect[] = [
-  { id: 'test', label: 'test.efkwgpk', path: testUrl, note: 'baseline package' },
-  { id: 'shadowball', label: 'shadowball.efkwgpk', path: shadowballUrl, note: 'distortion sample' },
-  { id: 'aurahdr', label: 'aurahdr.efkwgpk', path: aurahdrUrl, note: 'hdr aura' },
-  { id: 'blood', label: 'blood.efkwgpk', path: bloodUrl, note: 'blood splash' },
+  { id: 'aurahdr', label: 'aurahdr.efkwgpk', path: `${BUILTIN_SAMPLE_BASE}/aurahdr.efkwgpk`, note: 'aura package sample' },
+  { id: 'bloodpkg', label: 'blood.efkwgpk', path: `${BUILTIN_SAMPLE_BASE}/blood.efkwgpk`, note: 'blood package sample' },
+  { id: 'shadowball', label: 'shadowball.efkwgpk', path: `${BUILTIN_SAMPLE_BASE}/shadowball.efkwgpk`, note: 'shadowball package sample' },
+  { id: 'laser02', label: 'Laser02.efkwg', path: `${BUILTIN_SAMPLE_BASE}/Laser02.efkwg`, note: 'laser sample' },
+  { id: 'testpkg', label: 'test.efkwgpk', path: `${BUILTIN_SAMPLE_BASE}/test.efkwgpk`, note: 'test package sample' },
 ]
 
 const BUILTIN_IDS = SAMPLE_EFFECTS.map((effect) => effect.id)
 const TRIGGER_INDICES = [0, 1, 2, 3] as const
 const CONVERTED_PREVIEW_SCALE = 1
 const SAMPLE_LOOKUP = new Map(SAMPLE_EFFECTS.map((effect) => [effect.id, effect]))
-const BUILTIN_REGISTRY = Object.fromEntries(
-  SAMPLE_EFFECTS.map((effect) => [
-    effect.id,
-    {
-      path: effect.path,
-      scale: 1,
-    },
-  ])
-)
 
 const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   mode: 'basic',
   hdrOutput: false,
+  outputColorSpace: 'srgb',
   antialias: false,
   instanceMaxCount: 4000,
   squareMaxCount: 10000,
 }
 
 const DEFAULT_FLOOR_COLOR = '#505768'
-const UI_SETTINGS_STORAGE_KEY = 'effekseer-webgpu-converter-ui-v1'
+const UI_SETTINGS_STORAGE_KEY = 'effekseer-webgpu-converter-ui'
+const CREDIT_CHECKOUT_STORAGE_KEY = 'effekseer-credit-pack-checkout'
+const CHECKOUT_WAIT_TIMEOUT_MS = 30_000
+const PREVIEW_CONVERSION_BLOCKED_MESSAGE = 'This account cannot convert more effects until credits are purchased.'
+const EFFEKSEER_RUNTIME_BASE = (() => {
+  const raw = (import.meta.env.VITE_EFFEKSEER_RUNTIME_BASE || '/effekseer-runtime').trim()
+  if (!raw) return '/effekseer-runtime'
+  return raw.replace(/\/+$/, '')
+})()
+const EFFEKSEER_RUNTIME_WASM_URL = `${EFFEKSEER_RUNTIME_BASE}/Effekseer_WebGPU_Runtime.wasm`
+
+declare global {
+  interface Window {
+    __effekseerRuntimeLoadPromise__?: Promise<void>
+  }
+}
+
+const loadScriptOnce = (src: string): Promise<void> => {
+  const absoluteSrc = new URL(src, window.location.href).href
+  const existing = Array.from(document.querySelectorAll('script')).find((script) => script.src === absoluteSrc)
+  if (existing) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = absoluteSrc
+    script.async = false
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error(`Failed to load runtime script: ${src}`))
+    document.head.appendChild(script)
+  })
+}
+
+const ensureEffekseerRuntimeLoaded = async (): Promise<void> => {
+  if (window.effekseer) return
+  if (!window.__effekseerRuntimeLoadPromise__) {
+    window.__effekseerRuntimeLoadPromise__ = (async () => {
+      await loadScriptOnce(`${EFFEKSEER_RUNTIME_BASE}/fflate.umd.js`)
+      await loadScriptOnce(`${EFFEKSEER_RUNTIME_BASE}/Effekseer_WebGPU_Runtime.js`)
+      await loadScriptOnce(`${EFFEKSEER_RUNTIME_BASE}/effekseer.webgpu.src.js`)
+      if (!window.effekseer) {
+        throw new Error(`Effekseer runtime did not initialize from ${EFFEKSEER_RUNTIME_BASE}`)
+      }
+    })().catch((error) => {
+      window.__effekseerRuntimeLoadPromise__ = undefined
+      throw error
+    })
+  }
+  await window.__effekseerRuntimeLoadPromise__
+}
+
+const getAppBaseUrl = (): string => {
+  const configured = (import.meta.env.VITE_APP_BASE_URL || '').trim()
+  if (configured) {
+    return configured.replace(/\/$/, '')
+  }
+  if (typeof window === 'undefined') return ''
+  return `${window.location.origin}${window.location.pathname}`
+}
+
+const canAccountStartPreviewConversion = (accountUser: AccountUserRecord | null): boolean => {
+  if (!accountUser) return false
+  return accountUser.availableCredits > 0 || accountUser.freePreviewConversionsUsed < 5
+}
+
+const readMagicText = (bytes: ArrayBuffer | Uint8Array, length: number): string => {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  if (view.byteLength < length) return ''
+  const head = view.subarray(0, length)
+  return String.fromCharCode(...head)
+}
+
+const toUint8Array = (bytes: ArrayBuffer | Uint8Array): Uint8Array => {
+  if (bytes instanceof Uint8Array) return bytes
+  return new Uint8Array(bytes)
+}
+
+const readMagicTag = (bytes: ArrayBuffer | Uint8Array): string => {
+  const magic8 = readMagicText(bytes, 8)
+  if (magic8) return magic8
+  const magic4 = readMagicText(bytes, 4)
+  return magic4
+}
+
+const isSupportedEffectMagic = (bytes: ArrayBuffer | Uint8Array): boolean => {
+  const magic8 = readMagicText(bytes, 8)
+  const magic4 = readMagicText(bytes, 4)
+  return magic8 === 'EFWGPKG2' || magic4 === 'EFWG'
+}
+
+const describeMagic = (bytes: ArrayBuffer | Uint8Array): string => {
+  const tag = readMagicTag(bytes)
+  return tag || 'empty'
+}
+
+const createXYAxesGizmo = (size = 2.5): THREE.Group => {
+  const group = new THREE.Group()
+  group.name = 'XYAxesGizmo'
+
+  const createAxisLine = (start: THREE.Vector3, end: THREE.Vector3, color: number) => new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([start, end]),
+    new THREE.LineBasicMaterial({
+      color,
+      depthTest: false,
+      toneMapped: false,
+      transparent: true,
+    })
+  )
+  const xAxis = createAxisLine(new THREE.Vector3(0, 0, 0), new THREE.Vector3(size, 0, 0), 0xff5a5a)
+  const yAxis = createAxisLine(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, size, 0), 0x5a7dff)
+  xAxis.renderOrder = 1
+  yAxis.renderOrder = 1
+  group.add(xAxis, yAxis)
+
+  return group
+}
+
+const applySceneViewMode = (
+  camera: THREE.PerspectiveCamera,
+  controls: OrbitControls,
+  grid: THREE.GridHelper,
+  floor: THREE.Mesh,
+  viewMode: ViewMode
+) => {
+  if (viewMode === 'xy') {
+    camera.fov = 45
+    camera.zoom = 1
+    camera.position.set(0, 0, 24)
+    camera.up.set(0, 1, 0)
+    controls.target.set(0, 0, 0)
+    controls.enableRotate = false
+    controls.screenSpacePanning = true
+    grid.rotation.set(-Math.PI * 0.5, 0, 0)
+    floor.rotation.set(0, 0, 0)
+    floor.position.set(0, 0, -0.015)
+  } else {
+    camera.fov = 45
+    camera.zoom = 1
+    camera.position.set(9, 4.5, 9)
+    camera.up.set(0, 1, 0)
+    controls.target.set(0, 1, 0)
+    controls.enableRotate = true
+    controls.screenSpacePanning = true
+    grid.rotation.set(0, 0, 0)
+    floor.rotation.set(-Math.PI * 0.5, 0, 0)
+    floor.position.set(0, -0.015, 0)
+  }
+
+  camera.lookAt(controls.target)
+  camera.updateProjectionMatrix()
+  controls.update()
+}
 
 let sharedWebGPUDevicePromise: Promise<GPUDevice> | null = null
 let effekseerRuntimeInitialized = false
@@ -200,16 +443,11 @@ const createRuntimeState = (): RuntimeState => ({
   pass: null,
   handle: null,
   directEffect: null,
+  pendingPreviewEffect: null,
+  previewResourceCleanup: null,
   builtInEffects: new Map<string, ExtendedEffekseerEffect>(),
   activeEffectId: null,
 })
-
-const hasManagedEffectsApi = (ctx: ExtendedEffekseerContext | null | undefined) => (
-  !!ctx &&
-  typeof ctx.registerEffects === 'function' &&
-  typeof ctx.whenEffectsReady === 'function' &&
-  typeof ctx.playEffect === 'function'
-)
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   const copy = new Uint8Array(bytes.byteLength)
@@ -217,119 +455,188 @@ const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   return copy.buffer
 }
 
-const getBufferByteLength = (buffer: ArrayBuffer | Uint8Array | null | undefined): number => {
-  if (!buffer) return 0
-  if (buffer instanceof ArrayBuffer) return buffer.byteLength
-  if (buffer instanceof Uint8Array) return buffer.byteLength
-  return 0
-}
-
-const getBufferHeadHex = (buffer: ArrayBuffer | Uint8Array | null | undefined, count = 8): string => {
-  if (!buffer) return ''
-  const view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
-  if (view.byteLength === 0) return ''
-  const bytes = view.subarray(0, Math.min(count, view.byteLength))
-  return Array.from(bytes).map((v) => v.toString(16).padStart(2, '0')).join('')
-}
-
-type PackageSummary = {
-  entries: number
-  png: number
-  models: number
-  materials: number
-  sounds: number
-}
-
-const summarizeEfwgpk = (bytes: Uint8Array): PackageSummary | null => {
-  if (bytes.byteLength < 64) return null
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const magic = String.fromCharCode(
-    bytes[0] ?? 0,
-    bytes[1] ?? 0,
-    bytes[2] ?? 0,
-    bytes[3] ?? 0,
-    bytes[4] ?? 0,
-    bytes[5] ?? 0,
-    bytes[6] ?? 0,
-    bytes[7] ?? 0
-  )
-  if (magic !== 'EFWGPKG1') return null
-
-  const entryCount = view.getUint32(20, true)
-  const entrySize = view.getUint32(24, true)
-  const entriesOffset = view.getUint32(28, true)
-  if (entryCount <= 0 || entrySize <= 0) {
-    return { entries: 0, png: 0, models: 0, materials: 0, sounds: 0 }
-  }
-
-  let png = 0
-  let models = 0
-  let materials = 0
-  let sounds = 0
-
-  for (let i = 0; i < entryCount; i++) {
-    const entryOffset = entriesOffset + i * entrySize
-    if (entryOffset + 16 > bytes.byteLength) break
-    const pathOffset = view.getUint32(entryOffset + 8, true)
-    const pathLength = view.getUint32(entryOffset + 12, true)
-    if (pathOffset + pathLength > bytes.byteLength || pathLength <= 0) continue
-    const pathBytes = bytes.subarray(pathOffset, pathOffset + pathLength)
-    const path = new TextDecoder().decode(pathBytes).toLowerCase()
-    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || path.endsWith('.dds')) png++
-    if (path.endsWith('.efkmodel') || path.endsWith('.mqo')) models++
-    if (path.endsWith('.efkmat') || path.endsWith('.efkmatd')) materials++
-    if (path.endsWith('.wav') || path.endsWith('.ogg') || path.endsWith('.mp3')) sounds++
-  }
-
-  return { entries: entryCount, png, models, materials, sounds }
-}
-
 const isHandleAlive = (handle: ExtendedEffekseerHandle | null | undefined): boolean => {
   if (!handle) return false
   return handle.exists !== false
 }
 
-const isEfkefcSource = (fileName: string): boolean => {
+const isSupportedImportSource = (fileName: string): boolean => {
   const lower = fileName.toLowerCase()
-  return lower.endsWith('.efkefc')
+  return (
+    lower.endsWith('.efkefc') ||
+    lower.endsWith('.efkpkg') ||
+    lower.endsWith('.efkwg') ||
+    lower.endsWith('.efkwgpk')
+  )
 }
 
-const looksLikeMissingDependencyError = (message: string): boolean => {
-  if (!message) return false
+const isDirectViewerSource = (fileName: string): boolean => {
+  const lower = fileName.toLowerCase()
+  return lower.endsWith('.efkwg') || lower.endsWith('.efkwgpk')
+}
 
-  const lower = message.toLowerCase()
-  const missingHints = [
-    'missing',
-    'not found',
-    'failed to load',
-    'cannot find',
-    'could not find',
-    'unresolved',
-  ]
-  const dependencyHints = [
-    'dependency',
-    'dependencies',
-    'resource',
-    'resources',
-    'texture',
-    'model',
-    'material',
-    'sound',
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.dds',
-    '.tga',
-    '.bmp',
-    '.efkmodel',
-    '.mqo',
-    '.wav',
-    '.ogg',
-    '.mp3',
-  ]
+const requiresDependencyFolderPrompt = (fileName: string): boolean => {
+  const lower = fileName.toLowerCase()
+  return lower.endsWith('.efkefc') || lower.endsWith('.efkwg')
+}
 
-  return missingHints.some((hint) => lower.includes(hint)) &&
-    dependencyHints.some((hint) => lower.includes(hint))
+const SOURCE_PICKER_ID = 'effekseer-source-import'
+
+const normalizeDependencyRelativePath = (path: string): string => path.replace(/\\/g, '/').replace(/^\/+/, '')
+const getFilenameExtension = (filename: string): string => {
+  const index = filename.lastIndexOf('.')
+  return index >= 0 ? filename.slice(index) : '.bin'
+}
+
+const normalizeResourceAliasPath = (path: string): string => {
+  const normalized = String(path || '').replace(/\\/g, '/')
+  const segments: string[] = []
+  for (const raw of normalized.split('/')) {
+    if (!raw || raw === '.') continue
+    if (raw === '..') {
+      if (segments.length > 0) segments.pop()
+      continue
+    }
+    segments.push(raw.toLowerCase())
+  }
+  return segments.join('/')
+}
+
+const buildResourceAliases = (path: string): string[] => {
+  if (!path) return []
+
+  const normalized = String(path).replace(/\\/g, '/')
+  const variants = [normalized]
+
+  let withoutDot = normalized
+  while (withoutDot.startsWith('./')) {
+    withoutDot = withoutDot.slice(2)
+  }
+  if (withoutDot && withoutDot !== normalized) variants.push(withoutDot)
+
+  const filename = normalized.split('/').pop() || ''
+  if (filename && filename !== normalized) variants.push(filename)
+
+  const addFolderHints = (value: string) => {
+    if (!value || value.includes('/')) return
+    const lower = value.toLowerCase()
+    if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.dds') || lower.endsWith('.tga') || lower.endsWith('.bmp')) {
+      variants.push(`Texture/${value}`)
+      variants.push(`texture/${value}`)
+    }
+    if (lower.endsWith('.efkmodel') || lower.endsWith('.mqo')) {
+      variants.push(`Model/${value}`)
+      variants.push(`model/${value}`)
+      variants.push(`mqo/${value}`)
+    }
+    if (lower.endsWith('.wav') || lower.endsWith('.ogg') || lower.endsWith('.mp3')) {
+      variants.push(`Sound/${value}`)
+      variants.push(`sound/${value}`)
+    }
+  }
+
+  addFolderHints(filename)
+
+  const segments: string[] = []
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (segments.length > 0) segments.pop()
+      continue
+    }
+    segments.push(segment)
+  }
+  for (let i = 0; i < segments.length; i++) {
+    variants.push(segments.slice(i).join('/'))
+  }
+
+  const unique: string[] = []
+  const seen = new Set<string>()
+  for (const variant of variants) {
+    const normalizedVariant = normalizeResourceAliasPath(variant)
+    if (!normalizedVariant || seen.has(normalizedVariant)) continue
+    seen.add(normalizedVariant)
+    unique.push(normalizedVariant)
+  }
+
+  return unique
+}
+
+const stripResourceDecorations = (value: string): string => {
+  const normalized = String(value || '').replace(/\\/g, '/')
+  return normalized.split('#', 1)[0].split('?', 1)[0]
+}
+
+const createDependencyResourceBinding = (dependencyFiles: DependencyImportFile[]) => {
+  const aliasToUrl = new Map<string, string>()
+  const urls: string[] = []
+
+  for (const dependency of dependencyFiles) {
+    const url = URL.createObjectURL(dependency.file)
+    urls.push(url)
+
+    const seeds = [dependency.relativePath, dependency.file.name]
+    for (const seed of seeds) {
+      for (const alias of buildResourceAliases(seed)) {
+        if (!aliasToUrl.has(alias)) {
+          aliasToUrl.set(alias, url)
+        }
+      }
+    }
+  }
+
+  return {
+    redirect: (resolvedPath: string): string => {
+      const candidatePath = stripResourceDecorations(resolvedPath)
+      for (const alias of buildResourceAliases(candidatePath)) {
+        const mapped = aliasToUrl.get(alias)
+        if (mapped) {
+          return mapped
+        }
+      }
+      return resolvedPath
+    },
+    dispose: () => {
+      for (const url of urls) {
+        URL.revokeObjectURL(url)
+      }
+    },
+  }
+}
+
+const shouldSkipDependencyCandidate = (source: File, entry: DependencyImportFile): boolean => {
+  const candidateName = entry.relativePath.split('/').pop() || entry.file.name
+  return candidateName.toLowerCase() === source.name.toLowerCase() && entry.file.size === source.size
+}
+
+const filterDependencyImportFiles = (source: File, entries: DependencyImportFile[]): DependencyImportFile[] => (
+  entries.filter((entry) => !shouldSkipDependencyCandidate(source, entry))
+)
+
+const collectDependencyFilesFromDirectory = async (
+  handle: FileSystemDirectoryHandleLike,
+  prefix = ''
+): Promise<DependencyImportFile[]> => {
+  const files: DependencyImportFile[] = []
+
+  for await (const [entryName, rawHandle] of handle.entries()) {
+    if (!rawHandle || typeof rawHandle !== 'object') continue
+    const relativePath = prefix ? `${prefix}/${entryName}` : entryName
+    if (rawHandle.kind === 'directory') {
+      files.push(...await collectDependencyFilesFromDirectory(rawHandle as FileSystemDirectoryHandleLike, relativePath))
+      continue
+    }
+    if (rawHandle.kind !== 'file' || typeof (rawHandle as FileSystemFileHandleLike).getFile !== 'function') {
+      continue
+    }
+    const file = await (rawHandle as FileSystemFileHandleLike).getFile()
+    files.push({
+      file,
+      relativePath: normalizeDependencyRelativePath(relativePath),
+    })
+  }
+
+  return files
 }
 
 const requestSharedWebGPUDevice = async (): Promise<GPUDevice> => {
@@ -358,6 +665,7 @@ const clampPositiveInt = (value: number, fallback: number): number => {
 const areRuntimeConfigsEqual = (a: RuntimeConfig, b: RuntimeConfig): boolean => (
   a.mode === b.mode &&
   a.hdrOutput === b.hdrOutput &&
+  a.outputColorSpace === b.outputColorSpace &&
   a.antialias === b.antialias &&
   a.instanceMaxCount === b.instanceMaxCount &&
   a.squareMaxCount === b.squareMaxCount
@@ -366,6 +674,7 @@ const areRuntimeConfigsEqual = (a: RuntimeConfig, b: RuntimeConfig): boolean => 
 const normalizeRuntimeConfig = (config: RuntimeConfig): RuntimeConfig => ({
   mode: config.mode,
   hdrOutput: config.hdrOutput,
+  outputColorSpace: config.outputColorSpace === 'linear' ? 'linear' : 'srgb',
   antialias: config.antialias,
   instanceMaxCount: clampPositiveInt(config.instanceMaxCount, DEFAULT_RUNTIME_CONFIG.instanceMaxCount),
   squareMaxCount: clampPositiveInt(config.squareMaxCount, DEFAULT_RUNTIME_CONFIG.squareMaxCount),
@@ -378,6 +687,9 @@ const describeRuntimeConfigChanges = (current: RuntimeConfig, next: RuntimeConfi
   }
   if (current.hdrOutput !== next.hdrOutput) {
     changes.push(`Output: ${next.hdrOutput ? 'HDR' : 'LDR'}`)
+  }
+  if (current.outputColorSpace !== next.outputColorSpace) {
+    changes.push(`Color Space: ${next.outputColorSpace === 'linear' ? 'Linear' : 'sRGB'}`)
   }
   if (current.antialias !== next.antialias) {
     changes.push(`Antialias: ${next.antialias ? 'On' : 'Off'}`)
@@ -398,6 +710,7 @@ const sanitizeColor = (value: unknown, fallback: string): string => {
 const readPersistedUiSettings = (): PersistedUiSettings => {
   const defaults: PersistedUiSettings = {
     sidebarCollapsed: false,
+    viewMode: '3d',
     showSceneCube: true,
     showGrid: true,
     showFloor: false,
@@ -426,6 +739,7 @@ const readPersistedUiSettings = (): PersistedUiSettings => {
 
     return {
       sidebarCollapsed: typeof parsed.sidebarCollapsed === 'boolean' ? parsed.sidebarCollapsed : defaults.sidebarCollapsed,
+      viewMode: parsed.viewMode === 'xy' ? 'xy' : defaults.viewMode,
       showSceneCube: typeof parsed.showSceneCube === 'boolean' ? parsed.showSceneCube : defaults.showSceneCube,
       showGrid: typeof parsed.showGrid === 'boolean' ? parsed.showGrid : defaults.showGrid,
       showFloor: typeof parsed.showFloor === 'boolean' ? parsed.showFloor : defaults.showFloor,
@@ -439,6 +753,9 @@ const readPersistedUiSettings = (): PersistedUiSettings => {
           ? runtimeCandidate.mode
           : defaults.runtimeConfig.mode,
         hdrOutput: typeof runtimeCandidate.hdrOutput === 'boolean' ? runtimeCandidate.hdrOutput : defaults.runtimeConfig.hdrOutput,
+        outputColorSpace: runtimeCandidate.outputColorSpace === 'linear' || runtimeCandidate.outputColorSpace === 'srgb'
+          ? runtimeCandidate.outputColorSpace
+          : defaults.runtimeConfig.outputColorSpace,
         antialias: typeof runtimeCandidate.antialias === 'boolean' ? runtimeCandidate.antialias : defaults.runtimeConfig.antialias,
         instanceMaxCount: typeof runtimeCandidate.instanceMaxCount === 'number' ? runtimeCandidate.instanceMaxCount : defaults.runtimeConfig.instanceMaxCount,
         squareMaxCount: typeof runtimeCandidate.squareMaxCount === 'number' ? runtimeCandidate.squareMaxCount : defaults.runtimeConfig.squareMaxCount,
@@ -458,6 +775,44 @@ const writePersistedUiSettings = (settings: PersistedUiSettings) => {
   }
 }
 
+const readCheckoutResumeState = (): CheckoutResumeState | null => {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.sessionStorage.getItem(CREDIT_CHECKOUT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<CheckoutResumeState>
+    return {
+      baselineCredits: typeof parsed.baselineCredits === 'number' ? Math.trunc(parsed.baselineCredits) : 0,
+      lastCreditGrantOrderId: typeof parsed.lastCreditGrantOrderId === 'string' && parsed.lastCreditGrantOrderId.trim()
+        ? parsed.lastCreditGrantOrderId
+        : null,
+      artifactId: typeof parsed.artifactId === 'string' && parsed.artifactId.trim() ? parsed.artifactId : null,
+      filename: typeof parsed.filename === 'string' && parsed.filename.trim() ? parsed.filename : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+const writeCheckoutResumeState = (state: CheckoutResumeState) => {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.setItem(CREDIT_CHECKOUT_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // Ignore session storage failures.
+  }
+}
+
+const clearCheckoutResumeState = () => {
+  if (typeof window === 'undefined') return
+  try {
+    window.sessionStorage.removeItem(CREDIT_CHECKOUT_STORAGE_KEY)
+  } catch {
+    // Ignore session storage failures.
+  }
+}
+
 export default function EffekseerConverterCanvas() {
   const persistedUiSettingsRef = useRef<PersistedUiSettings | null>(null)
   if (persistedUiSettingsRef.current === null) {
@@ -466,8 +821,11 @@ export default function EffekseerConverterCanvas() {
   const persistedUiSettings = persistedUiSettingsRef.current
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const cubeRef = useRef<THREE.Mesh | null>(null)
   const gridRef = useRef<THREE.GridHelper | null>(null)
+  const axesHelperRef = useRef<THREE.AxesHelper | null>(null)
+  const xyAxesGizmoRef = useRef<THREE.Group | null>(null)
   const floorRef = useRef<THREE.Mesh | null>(null)
   const controlsRef = useRef<OrbitControls | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
@@ -476,16 +834,17 @@ export default function EffekseerConverterCanvas() {
   const menuBarRef = useRef<HTMLElement | null>(null)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const runtimeRef = useRef<RuntimeState>(createRuntimeState())
+  const dependencyPromptTokenRef = useRef(0)
+  const sourceHandleRef = useRef<FileSystemFileHandleLike | null>(null)
 
   const [runtimeReady, setRuntimeReady] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(persistedUiSettings.sidebarCollapsed)
+  const [viewMode, setViewMode] = useState<ViewMode>(persistedUiSettings.viewMode)
   const [activeEffectId, setActiveEffectId] = useState('')
   const [playback, setPlayback] = useState<'stopped' | 'playing' | 'paused'>('stopped')
   const [error, setError] = useState('')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
-  const [depsFiles, setDepsFiles] = useState<File[]>([])
-  const [showDepsPrompt, setShowDepsPrompt] = useState(false)
-  const [depsPromptSource, setDepsPromptSource] = useState('')
+  const [dependencyFiles, setDependencyFiles] = useState<DependencyImportFile[]>([])
   const [pendingAutoConvert, setPendingAutoConvert] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
   const [converting, setConverting] = useState(false)
@@ -498,23 +857,29 @@ export default function EffekseerConverterCanvas() {
   const [gridColor, setGridColor] = useState(persistedUiSettings.gridColor)
   const [floorColor, setFloorColor] = useState(persistedUiSettings.floorColor)
   const [showSamplesList, setShowSamplesList] = useState(persistedUiSettings.showSamplesList)
-  const [convertedList, setConvertedList] = useState<Array<ConvertedPackage>>([])
-  const [convertedPackage, setConvertedPackage] = useState<ConvertedPackage | null>(null)
-  const [, setConverterStatus] = useState('Choose or drop .efkefc, .efkpkg, or .efkwgpk')
+  const [convertedList, setConvertedList] = useState<Array<LocalConvertedPackage>>([])
+  const [convertedPackage, setConvertedPackage] = useState<LocalConvertedPackage | null>(null)
+  const [, setConverterStatus] = useState('Choose or drop .efkefc, .efkpkg, .efkwg, or .efkwgpk')
   
-  // Credits System
-  const [credits, setCredits] = useState(5)
-  const [unlockedDownloads, setUnlockedDownloads] = useState<Set<string>>(new Set())
-  const [showUnlockModal, setShowUnlockModal] = useState<ConvertedPackage | null>(null)
+  const [authUser, setAuthUser] = useState<AuthUserRecord | null>(null)
+  const [accountUser, setAccountUser] = useState<AccountUserRecord | null>(null)
+  const [accountArtifacts, setAccountArtifacts] = useState<AccountArtifactRecord[]>([])
+  const [showUnlockModal, setShowUnlockModal] = useState<UnlockTarget | null>(null)
+  const [showCreditPackModal, setShowCreditPackModal] = useState(false)
+  const [showSignInPromptModal, setShowSignInPromptModal] = useState(false)
+  const [signInPromptMessage, setSignInPromptMessage] = useState('Sign in with Google before continuing.')
+  const [signInPending, setSignInPending] = useState(false)
+  const [showDeleteArtifactModal, setShowDeleteArtifactModal] = useState<DeleteArtifactDialogState | null>(null)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [runtimeConfigDraft, setRuntimeConfigDraft] = useState<RuntimeConfig>(persistedUiSettings.runtimeConfig)
   const [runtimeConfigApplied, setRuntimeConfigApplied] = useState<RuntimeConfig>(persistedUiSettings.runtimeConfig)
   const [showCanvasResetModal, setShowCanvasResetModal] = useState(false)
   const [pendingRuntimeConfig, setPendingRuntimeConfig] = useState<RuntimeConfig | null>(null)
+  const [checkoutPending, setCheckoutPending] = useState(false)
+  const [deletePending, setDeletePending] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
-  const useNativeConverter = true
-  const injectMeshNative = true
   const showStatsRef = useRef(showStats)
   const runtimeConfigPromptTimerRef = useRef<number | null>(null)
   const cpuStatsRef = useRef({
@@ -536,6 +901,7 @@ export default function EffekseerConverterCanvas() {
   useEffect(() => {
     writePersistedUiSettings({
       sidebarCollapsed,
+      viewMode,
       showSceneCube,
       showGrid,
       showFloor,
@@ -551,6 +917,7 @@ export default function EffekseerConverterCanvas() {
     floorColor,
     gridColor,
     runtimeConfigApplied,
+    viewMode,
     showFloor,
     showGrid,
     showSamplesList,
@@ -559,10 +926,474 @@ export default function EffekseerConverterCanvas() {
     sidebarCollapsed,
   ])
 
-  const appendLog = useCallback((message: string) => {
-    if (!message) return
-    console.info(`[EffekseerConverter] ${message}`)
+  const reportFirebaseError = useCallback((label: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    setError(`${label}: ${message}`)
   }, [])
+
+  useEffect(() => {
+    return subscribeToAccountState(
+      (state) => {
+        setAuthUser(state.authUser)
+        setAccountUser(state.account)
+        setAccountArtifacts(state.artifacts)
+      },
+      (message) => {
+        setError(message)
+      }
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!authUser) return
+    setShowSignInPromptModal(false)
+  }, [authUser])
+
+  const downloadViaAnchor = useCallback((url: string, filename: string) => {
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.rel = 'noopener'
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }, [])
+
+  const saveBlobToPickedLocation = useCallback(async (blob: Blob, filename: string): Promise<boolean> => {
+    const pickerWindow = window as DirectoryPickerWindow
+    if (typeof pickerWindow.showSaveFilePicker !== 'function') {
+      return false
+    }
+
+    try {
+      const handle = await pickerWindow.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: 'Effekseer files',
+            accept: {
+              'application/octet-stream': [getFilenameExtension(filename)],
+            },
+          },
+        ],
+      })
+      if (!handle.createWritable) {
+        return false
+      }
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return true
+    } catch (error) {
+      const errorName = error instanceof DOMException ? error.name : ''
+      if (errorName === 'AbortError') {
+        return true
+      }
+      throw error
+    }
+  }, [])
+
+  const downloadRemoteArtifact = useCallback(async (downloadUrl: string, filename: string) => {
+    try {
+      const response = await fetch(downloadUrl)
+      if (!response.ok) {
+        throw new Error(`Download failed with HTTP ${response.status}`)
+      }
+      const blob = await response.blob()
+      const saved = await saveBlobToPickedLocation(blob, filename)
+      if (saved) return
+
+      const objectUrl = URL.createObjectURL(blob)
+      downloadViaAnchor(objectUrl, filename)
+      URL.revokeObjectURL(objectUrl)
+    } catch {
+      downloadViaAnchor(downloadUrl, filename)
+    }
+  }, [downloadViaAnchor, saveBlobToPickedLocation])
+
+  const downloadLocalArtifact = useCallback(async (bytes: Uint8Array, filename: string) => {
+    const payload = new Uint8Array(bytes.byteLength)
+    payload.set(bytes)
+    const blob = new Blob([payload.buffer], {
+      type: 'application/octet-stream',
+    })
+    const saved = await saveBlobToPickedLocation(blob, filename)
+    if (saved) return
+
+    const objectUrl = URL.createObjectURL(blob)
+    downloadViaAnchor(objectUrl, filename)
+    URL.revokeObjectURL(objectUrl)
+  }, [downloadViaAnchor, saveBlobToPickedLocation])
+
+  const openSignInPrompt = useCallback((message: string) => {
+    setShowProfileMenu(false)
+    setSignInPromptMessage(message)
+    setShowSignInPromptModal(true)
+  }, [])
+
+  const handleGooglePromptSignIn = useCallback(async () => {
+    setSignInPending(true)
+    setError('')
+    try {
+      const completed = await signInWithGoogle()
+      if (completed) {
+        setShowSignInPromptModal(false)
+      }
+    } catch (error) {
+      reportFirebaseError('Unable to sign in', error)
+    } finally {
+      setSignInPending(false)
+    }
+  }, [reportFirebaseError])
+
+  const ensureSignedInForPremiumAction = useCallback(async (): Promise<boolean> => {
+    if (authUser) return true
+    openSignInPrompt('You need to sign in with Google before continuing.')
+    return false
+  }, [authUser, openSignInPrompt])
+
+  const removeConvertedPackageByOutputName = useCallback((outputName: string) => {
+    setConvertedList((prev) => prev.filter((item) => item.outputName !== outputName))
+    if (convertedPackage?.outputName === outputName) {
+      const runtime = runtimeRef.current
+      if (runtime.ctx?.releaseEffect && runtime.directEffect) {
+        try {
+          runtime.ctx.releaseEffect(runtime.directEffect)
+        } catch {
+          // Ignore stale release failures during teardown.
+        }
+      }
+      runtime.directEffect = null
+      setConvertedPackage(null)
+      setPlayback('stopped')
+    }
+  }, [convertedPackage?.outputName])
+
+  const registerArtifactForItem = useCallback(async (item: LocalConvertedPackage) => {
+    if (item.artifactId) {
+      return {
+        artifactId: item.artifactId,
+        sha256: item.artifactSha256,
+      }
+    }
+    if (!(item.bytes instanceof Uint8Array)) {
+      throw new Error(`Artifact bytes are not available for ${item.outputName}.`)
+    }
+
+    const registration = await registerConvertedArtifact({
+      outputName: item.outputName,
+      sourceName: sourceFile?.name || item.outputName,
+      bytes: item.bytes,
+    })
+
+    setConvertedList((prev) => prev.map((entry) => (
+      entry.outputName === item.outputName
+        ? {
+            ...entry,
+            artifactId: registration.artifactId,
+            artifactSha256: registration.sha256,
+            artifactBytesLength: registration.bytesLength,
+          }
+        : entry
+    )))
+    setConvertedPackage((current) => (
+      current && current.outputName === item.outputName
+        ? {
+            ...current,
+            artifactId: registration.artifactId,
+            artifactSha256: registration.sha256,
+            artifactBytesLength: registration.bytesLength,
+          }
+        : current
+    ))
+
+    return {
+      artifactId: registration.artifactId,
+      sha256: registration.sha256,
+    }
+  }, [sourceFile])
+
+  const upsertLocalConvertedPackage = useCallback((nextItem: LocalConvertedPackage) => {
+    setConvertedList((prev) => {
+      const nextIndex = prev.findIndex((item) => (
+        (!!nextItem.artifactId && item.artifactId === nextItem.artifactId) ||
+        (!!nextItem.artifactSha256 && item.artifactSha256 === nextItem.artifactSha256) ||
+        item.outputName === nextItem.outputName
+      ))
+      if (nextIndex < 0) return [...prev, nextItem]
+      const clone = prev.slice()
+      clone[nextIndex] = nextItem
+      return clone
+    })
+    setConvertedPackage(nextItem)
+  }, [])
+
+  const runCreditPackCheckout = useCallback(async (packId: CreditPackId, target: UnlockTarget | null) => {
+    const latestAccount = await getCurrentAccountSnapshot()
+    if (latestAccount) {
+      setAccountUser(latestAccount)
+    }
+
+    let artifactId: string | null = null
+    let filename: string | null = null
+
+    if (target?.kind === 'session') {
+      if (target.accountArtifact) {
+        artifactId = target.accountArtifact.artifactId
+        filename = target.accountArtifact.outputName
+      } else {
+        const registration = await registerArtifactForItem(target.item)
+        artifactId = registration.artifactId
+        filename = target.item.outputName
+      }
+    } else if (target?.kind === 'account') {
+      artifactId = target.artifact.artifactId
+      filename = target.artifact.outputName
+    }
+
+    writeCheckoutResumeState({
+      baselineCredits: latestAccount?.creditsBalance ?? accountUser?.creditsBalance ?? 0,
+      lastCreditGrantOrderId: latestAccount?.lastCreditGrantOrderId ?? accountUser?.lastCreditGrantOrderId ?? null,
+      artifactId,
+      filename,
+    })
+
+    const appBaseUrl = getAppBaseUrl()
+    const returnUrl = `${appBaseUrl}?checkout=success`
+    const { checkoutUrl } = await createCreditPackCheckoutSession({
+      packId,
+      returnUrl,
+      artifactId: artifactId || undefined,
+    })
+    window.location.assign(checkoutUrl)
+  }, [accountUser, registerArtifactForItem])
+
+  const handleSignIn = useCallback(async () => {
+    openSignInPrompt('Sign in with Google to continue.')
+  }, [openSignInPrompt])
+
+  const handleOpenCreditPackModal = useCallback(async () => {
+    setShowProfileMenu(false)
+    try {
+      const completed = await ensureSignedInForPremiumAction()
+      if (!completed) return
+      setShowCreditPackModal(true)
+    } catch (error) {
+      reportFirebaseError('Unable to start credit purchase', error)
+    }
+  }, [ensureSignedInForPremiumAction, reportFirebaseError])
+
+  const handleSignOut = useCallback(async () => {
+    setShowProfileMenu(false)
+    setShowCreditPackModal(false)
+    setShowDeleteArtifactModal(null)
+    try {
+      await signOutCurrentUser()
+    } catch (error) {
+      reportFirebaseError('Unable to sign out', error)
+    }
+  }, [reportFirebaseError])
+
+  const handleCreditPackPurchase = useCallback(async (packId: CreditPackId, target: UnlockTarget | null) => {
+    try {
+      const isSignedIn = await ensureSignedInForPremiumAction()
+      if (!isSignedIn) return
+
+      setCheckoutPending(true)
+      setShowCreditPackModal(false)
+      await runCreditPackCheckout(packId, target)
+    } catch (error) {
+      clearCheckoutResumeState()
+      reportFirebaseError('Unable to purchase credits', error)
+      setCheckoutPending(false)
+    }
+  }, [ensureSignedInForPremiumAction, reportFirebaseError, runCreditPackCheckout])
+
+  const handleUnlockDownload = useCallback(async (target: UnlockTarget) => {
+    try {
+      const isSignedIn = await ensureSignedInForPremiumAction()
+      if (!isSignedIn) return
+
+      let artifactId = ''
+      let filename = ''
+
+      if (target.kind === 'session') {
+        if (target.accountArtifact) {
+          artifactId = target.accountArtifact.artifactId
+          filename = target.accountArtifact.outputName
+        } else {
+          const registration = await registerArtifactForItem(target.item)
+          artifactId = registration.artifactId
+          filename = target.item.outputName
+        }
+      } else {
+        artifactId = target.artifact.artifactId
+        filename = target.artifact.outputName
+      }
+
+      const result = await consumeUnlockCredit(artifactId)
+      setAccountUser((current) => current ? {
+        ...current,
+        creditsBalance: result.creditsBalance,
+        availableCredits: Math.max(0, result.creditsBalance),
+      } : current)
+      await downloadRemoteArtifact(result.downloadUrl, filename)
+      setShowUnlockModal(null)
+    } catch (error) {
+      reportFirebaseError('Unable to unlock download', error)
+    }
+  }, [
+    downloadRemoteArtifact,
+    ensureSignedInForPremiumAction,
+    registerArtifactForItem,
+    reportFirebaseError,
+  ])
+
+  const handleConfirmDeleteArtifact = useCallback(async () => {
+    if (!showDeleteArtifactModal) return
+
+    const { artifact } = showDeleteArtifactModal
+    setDeletePending(true)
+    setDeleteError('')
+
+    try {
+      await deleteAccountArtifact(artifact.artifactId)
+
+      const localMatch = convertedList.find((item) => (
+        (!!item.artifactId && item.artifactId === artifact.artifactId) ||
+        (!!item.artifactSha256 && item.artifactSha256 === artifact.sha256)
+      )) ?? null
+
+      if (localMatch) {
+        removeConvertedPackageByOutputName(localMatch.outputName)
+      }
+
+      if (showUnlockModal) {
+        const modalArtifactId = showUnlockModal.kind === 'account'
+          ? showUnlockModal.artifact.artifactId
+          : showUnlockModal.accountArtifact?.artifactId ?? null
+        if (modalArtifactId === artifact.artifactId) {
+          setShowUnlockModal(null)
+        }
+      }
+
+      setShowDeleteArtifactModal(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setDeleteError(message)
+    } finally {
+      setDeletePending(false)
+    }
+  }, [
+   
+    convertedList,
+    removeConvertedPackageByOutputName,
+    showDeleteArtifactModal,
+    showUnlockModal,
+  ])
+
+  useEffect(() => {
+    if (accountArtifacts.length === 0) return
+
+    setConvertedList((prev) => prev.map((item) => {
+      const match = item.artifactId
+        ? accountArtifacts.find((artifact) => artifact.artifactId === item.artifactId)
+        : item.artifactSha256
+          ? accountArtifacts.find((artifact) => artifact.sha256 === item.artifactSha256)
+          : null
+
+      if (!match) return item
+      return {
+        ...item,
+        artifactId: match.artifactId,
+        artifactSha256: match.sha256,
+        artifactBytesLength: match.bytesLength,
+      }
+    }))
+
+    setConvertedPackage((current) => {
+      if (!current) return current
+      const match = current.artifactId
+        ? accountArtifacts.find((artifact) => artifact.artifactId === current.artifactId)
+        : current.artifactSha256
+          ? accountArtifacts.find((artifact) => artifact.sha256 === current.artifactSha256)
+          : null
+      if (!match) return current
+      return {
+        ...current,
+        artifactId: match.artifactId,
+        artifactSha256: match.sha256,
+        artifactBytesLength: match.bytesLength,
+      }
+    })
+  }, [accountArtifacts])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('checkout') !== 'success') return
+
+    const checkoutResumeState = readCheckoutResumeState()
+    const startedAt = Date.now()
+    let cancelled = false
+
+    const baselineCredits = checkoutResumeState?.baselineCredits ?? (accountUser?.creditsBalance ?? 0)
+    const baselineOrderId = checkoutResumeState?.lastCreditGrantOrderId ?? accountUser?.lastCreditGrantOrderId ?? null
+
+    const cleanupCheckoutUrl = () => {
+      params.delete('checkout')
+      params.delete('artifactId')
+      const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
+      window.history.replaceState({}, '', nextUrl)
+      clearCheckoutResumeState()
+    }
+
+    const poll = async () => {
+      while (!cancelled && Date.now() - startedAt < CHECKOUT_WAIT_TIMEOUT_MS) {
+        const latestAccount = await getCurrentAccountSnapshot()
+        if (latestAccount) {
+          setAccountUser(latestAccount)
+        }
+
+        const creditGrantDetected = !!latestAccount && (
+          latestAccount.creditsBalance > baselineCredits ||
+          latestAccount.lastCreditGrantOrderId !== baselineOrderId
+        )
+
+        if (creditGrantDetected) {
+          cleanupCheckoutUrl()
+
+          if (checkoutResumeState?.artifactId && checkoutResumeState.filename) {
+            try {
+              const result = await consumeUnlockCredit(checkoutResumeState.artifactId)
+              setAccountUser((current) => current ? {
+                ...current,
+                creditsBalance: result.creditsBalance,
+                availableCredits: Math.max(0, result.creditsBalance),
+              } : current)
+              await downloadRemoteArtifact(result.downloadUrl, checkoutResumeState.filename)
+            } catch (error) {
+              reportFirebaseError('Unable to resume unlock after credit purchase', error)
+            }
+          }
+
+          return
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 1000))
+      }
+
+      cleanupCheckoutUrl()
+    }
+
+    void poll()
+
+    return () => {
+      cancelled = true
+    }
+  }, [accountUser,  downloadRemoteArtifact, reportFirebaseError])
 
   const openHeaderMenu = useCallback((menu: string) => {
     setShowProfileMenu(false)
@@ -576,6 +1407,15 @@ export default function EffekseerConverterCanvas() {
 
   const clearConvertedRegistration = useCallback(() => {
     const runtime = runtimeRef.current
+    runtime.pendingPreviewEffect = null
+    if (runtime.previewResourceCleanup) {
+      try {
+        runtime.previewResourceCleanup()
+      } catch {
+        // Ignore stale object URL cleanup failures.
+      }
+    }
+    runtime.previewResourceCleanup = null
     if (runtime.ctx?.releaseEffect && runtime.directEffect) {
       try {
         runtime.ctx.releaseEffect(runtime.directEffect)
@@ -615,7 +1455,6 @@ export default function EffekseerConverterCanvas() {
     if (!handle) {
       setPlayback('stopped')
       setError(`play("${label}") returned null.`)
-      appendLog(`play("${label}") returned null.`)
       return false
     }
 
@@ -625,9 +1464,8 @@ export default function EffekseerConverterCanvas() {
     setActiveEffectId(effectId)
     setPlayback('playing')
     setError('')
-    appendLog(`Playing ${label}`)
     return true
-  }, [appendLog])
+  }, [])
 
   const playRegisteredEffect = useCallback(async (effectId: string) => {
     const runtime = runtimeRef.current
@@ -639,54 +1477,90 @@ export default function EffekseerConverterCanvas() {
       runtime.handle?.stop()
       ctx.stopAll()
 
-      let handle: ExtendedEffekseerHandle | null = null
-      if (hasManagedEffectsApi(ctx)) {
-        const loadedEffects = await ctx.whenEffectsReady([effectId])
-        if (!loadedEffects.get(effectId)) {
-          throw new Error(`Effect "${effectId}" failed to load.`)
-        }
-        handle = ctx.playEffect(effectId, 0, 0, 0) as ExtendedEffekseerHandle | null
-        if (!handle) {
-          throw new Error(`playEffect("${effectId}") returned null.`)
-        }
-      } else {
-        const sample = SAMPLE_LOOKUP.get(effectId)
-        if (!sample) {
-          throw new Error(`Unknown sample id: ${effectId}`)
-        }
-        if (!ctx.loadEffect || !ctx.play) {
-          throw new Error('Runtime context does not expose loadEffect()/play() APIs.')
-        }
+      const sample = SAMPLE_LOOKUP.get(effectId)
+      if (!sample) {
+        throw new Error(`Unknown sample id: ${effectId}`)
+      }
+      if (!ctx.loadEffect || !ctx.play) {
+        throw new Error('Runtime context does not expose loadEffect()/play() APIs.')
+      }
 
-        let effect = runtime.builtInEffects.get(effectId) ?? null
-        if (!effect) {
-          const response = await fetch(sample.path)
-          if (!response.ok) {
-            throw new Error(`Failed to fetch sample bytes (${response.status}) for ${sample.label}`)
+      let effect = runtime.builtInEffects.get(effectId) ?? null
+      if (!effect) {
+        const loadWithContext = (data: string | Uint8Array, label: string) => new Promise<ExtendedEffekseerEffect>((resolve, reject) => {
+          let requestedEffect: ExtendedEffekseerEffect | null = null
+          requestedEffect = ctx.loadEffect!(
+            data,
+            1,
+            () => resolve(requestedEffect!),
+            (message: string, path: string) => reject(new Error(path ? `${message} (${path})` : message || `failed to load ${label}`))
+          )
+          if (!requestedEffect) {
+            reject(new Error(`loadEffect returned null for ${label}`))
           }
-          const sampleBytes = await response.arrayBuffer()
-          effect = await new Promise<ExtendedEffekseerEffect>((resolve, reject) => {
-            let requestedEffect: ExtendedEffekseerEffect | null = null
-            requestedEffect = ctx.loadEffect!(
-              sampleBytes,
-              1,
-              () => resolve(requestedEffect!),
-              (message: string, path: string) => reject(new Error(path ? `${message} (${path})` : message))
-            )
-            if (!requestedEffect) {
-              reject(new Error(`loadEffect(bytes for "${sample.label}") returned null.`))
-            }
-          })
-          runtime.builtInEffects.set(effectId, effect)
+        })
+
+        const candidates = Array.from(new Set([
+          sample.path,
+          `${EFFEKSEER_RUNTIME_BASE}/${sample.label}`,
+        ]))
+        const candidateErrors: string[] = []
+
+        for (const candidate of candidates) {
+          try {
+            effect = await loadWithContext(candidate, candidate)
+            break
+          } catch (loadError) {
+            const message = loadError instanceof Error ? loadError.message : String(loadError)
+            candidateErrors.push(`${candidate} -> ${message}`)
+          }
         }
 
-        if (!effect.isLoaded) {
-          throw new Error(`Effect "${sample.label}" did not finish loading.`)
+        let sampleBytes: Uint8Array | null = null
+        const fetchErrors: string[] = []
+
+        if (!effect) {
+          for (const candidate of candidates) {
+            const response = await fetch(candidate)
+            if (!response.ok) {
+              fetchErrors.push(`${candidate} -> HTTP ${response.status}`)
+              continue
+            }
+
+            const bytes = toUint8Array(await response.arrayBuffer())
+            const valid = isSupportedEffectMagic(bytes)
+            if (!valid) {
+              fetchErrors.push(`${candidate} -> invalid magic (${describeMagic(bytes)})`)
+              continue
+            }
+
+            sampleBytes = bytes
+            break
+          }
         }
-        handle = ctx.play(effect, 0, 0, 0) as ExtendedEffekseerHandle | null
-        if (!handle) {
-          throw new Error(`play("${sample.label}") returned null.`)
+
+        if (!effect && !sampleBytes) {
+          throw new Error(
+            `Failed to load ${sample.label}. ${candidateErrors.join(' | ')}${fetchErrors.length ? ` | ${fetchErrors.join(' | ')}` : ''}`
+          )
         }
+
+        if (!effect && sampleBytes) {
+          effect = await loadWithContext(sampleBytes, `${sample.label} (bytes)`)
+        }
+
+        if (!effect) {
+          throw new Error(`Effect "${sample.label}" failed to initialize.`)
+        }
+        runtime.builtInEffects.set(effectId, effect)
+      }
+
+      if (!effect.isLoaded) {
+        throw new Error(`Effect "${sample.label}" did not finish loading.`)
+      }
+      const handle = ctx.play(effect, 0, 0, 0) as ExtendedEffekseerHandle | null
+      if (!handle) {
+        throw new Error(`play("${sample.label}") returned null.`)
       }
 
       runtime.handle = handle
@@ -694,81 +1568,183 @@ export default function EffekseerConverterCanvas() {
       setActiveEffectId(effectId)
       setPlayback('playing')
       setError('')
-      appendLog(`Playing ${SAMPLE_LOOKUP.get(effectId)?.label ?? effectId}`)
       return true
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
       setPlayback('stopped')
       setError(message)
-      appendLog(message)
       return false
     }
-  }, [appendLog, clearConvertedRegistration])
+  }, [clearConvertedRegistration])
 
-  const loadConvertedPreview = useCallback(async (pkg: ConvertedPackage) => {
+  const loadConvertedPreview = useCallback(async (pkg: LocalConvertedPackage) => {
     const runtime = runtimeRef.current
     const ctx = runtime.ctx
     if (!ctx?.loadEffect) return
+    if (!(pkg.bytes instanceof Uint8Array) || pkg.bytes.byteLength === 0) {
+      throw new Error('Preview disabled for locked conversions. Unlock the artifact to download it.')
+    }
+    const previewBytes = pkg.bytes
+    const dependencyBinding = pkg.dependencyFiles && pkg.dependencyFiles.length > 0
+      ? createDependencyResourceBinding(pkg.dependencyFiles)
+      : null
 
     clearConvertedRegistration()
     runtime.handle?.stop()
     ctx.stopAll()
+    runtime.previewResourceCleanup = dependencyBinding?.dispose ?? null
 
     const effect = await new Promise<ExtendedEffekseerEffect>((resolve, reject) => {
       let requestedEffect: ExtendedEffekseerEffect | null = null
+      let settled = false
+      const probeTimerIds: number[] = []
+      const timeoutId = window.setTimeout(() => {
+        if (settled) return
+        settled = true
+        for (const timerId of probeTimerIds) window.clearTimeout(timerId)
+        reject(new Error(`Timed out while loading preview "${pkg.outputName}".`))
+      }, 15000)
+
+      const finishResolve = () => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeoutId)
+        for (const timerId of probeTimerIds) window.clearTimeout(timerId)
+        runtime.pendingPreviewEffect = null
+        resolve(requestedEffect!)
+      }
+
+      const finishReject = (error: Error) => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeoutId)
+        for (const timerId of probeTimerIds) window.clearTimeout(timerId)
+        runtime.pendingPreviewEffect = null
+        reject(error)
+      }
+
       requestedEffect = ctx.loadEffect!(
-        toArrayBuffer(pkg.bytes),
+        toArrayBuffer(previewBytes),
         CONVERTED_PREVIEW_SCALE,
-        () => resolve(requestedEffect!),
-        (message: string, path: string) => reject(new Error(path ? `${message} (${path})` : message))
+        () => {
+          finishResolve()
+        },
+        (message: string, path: string) => {
+          const errorMessage = path ? `${message} (${path})` : message
+          finishReject(new Error(errorMessage))
+        },
+        dependencyBinding?.redirect
       )
       if (!requestedEffect) {
-        reject(new Error('loadEffect(bytes) returned null.'))
+        finishReject(new Error('loadEffect(bytes) returned null.'))
+        return
+      }
+      runtime.pendingPreviewEffect = requestedEffect
+      for (const waitMs of [0, 50, 250, 1000, 4000]) {
+        const timerId = window.setTimeout(() => {
+          if (settled) return
+        }, waitMs)
+        probeTimerIds.push(timerId)
       }
     })
-
     if (!effect.isLoaded) {
       throw new Error(`Converted effect "${pkg.outputName}" did not finish loading.`)
     }
 
-    const resources = Array.isArray(effect.resources) ? effect.resources : []
-    if (resources.length > 0) {
-      const requested = resources
-        .map((entry) => entry?.path || '')
-        .filter((value) => value.length > 0)
-      const missing = resources
-        .filter((entry) => entry?.isLoaded && !entry?.buffer)
-        .map((entry) => entry?.path || '(unknown)')
-      appendLog(
-        `Package resource status: total=${resources.length} loaded=${resources.length - missing.length} missing=${missing.length}`
-      )
-      appendLog(`Package resource requested list: ${requested.join(', ')}`)
-      if (missing.length > 0) {
-        appendLog(`Package resource missing list: ${missing.join(', ')}`)
+    setConverterStatus(`Preview ready: ${pkg.outputName}`)
+    playDirectEffect(effect, 'converted-preview', pkg.outputName)
+  }, [clearConvertedRegistration, playDirectEffect])
+
+  const loadAccountArtifactPreview = useCallback(async (artifact: AccountArtifactRecord) => {
+    try {
+      const localMatch = convertedList.find((item) => (
+        (!!item.artifactId && item.artifactId === artifact.artifactId) ||
+        (!!item.artifactSha256 && item.artifactSha256 === artifact.sha256)
+      )) ?? null
+
+      if (localMatch?.bytes) {
+        upsertLocalConvertedPackage(localMatch)
+        await loadConvertedPreview(localMatch)
+        return
       }
-      for (const entry of resources) {
-        const path = entry?.path || '(unknown)'
-        const loaded = entry?.isLoaded ? 'loaded' : 'pending'
-        const buffer = entry?.buffer ?? null
-        const bytes = getBufferByteLength(buffer)
-        const head = getBufferHeadHex(buffer)
-        appendLog(`Package resource detail: ${path} | ${loaded} | bytes=${bytes} | head=${head}`)
+
+      if (artifact.unlockStatus !== 'unlocked') {
+        setConverterStatus(`Preview locked: ${artifact.outputName}`)
+        return
       }
-    } else {
-      appendLog('Package resource status: effect requested 0 external resources.')
+
+      setLoadingMessage(`Loading library effect: ${artifact.outputName}`)
+      const loaded = await loadAccountArtifactBytes(artifact.artifactId)
+      const bytes = loaded.bytes
+      const resolvedSha256 = loaded.sha256 || artifact.sha256 || await sha256Hex(bytes)
+      const pkg: LocalConvertedPackage = {
+        artifactId: artifact.artifactId,
+        alreadyExisted: true,
+        bytes,
+        outputName: artifact.outputName,
+        mainEffectPath: artifact.outputName,
+        bytesLength: bytes.byteLength,
+        sha256: resolvedSha256,
+        status: 'completed',
+        artifactSha256: resolvedSha256,
+        artifactBytesLength: bytes.byteLength,
+        sourceKind: 'converted',
+        dependencyFiles: [],
+      }
+
+      upsertLocalConvertedPackage(pkg)
+      setConverterStatus(`Loaded ${artifact.outputName} ${(bytes.byteLength / 1024).toFixed(1)} KB`)
+      await loadConvertedPreview(pkg)
+    } finally {
+      setLoadingMessage('')
+    }
+  }, [
+    convertedList,
+    loadConvertedPreview,
+    loadAccountArtifactBytes,
+    upsertLocalConvertedPackage,
+  ])
+
+  const downloadUnlockedAccountArtifact = useCallback(async (artifact: AccountArtifactRecord) => {
+    const localMatch = convertedList.find((item) => (
+      (!!item.artifactId && item.artifactId === artifact.artifactId) ||
+      (!!item.artifactSha256 && item.artifactSha256 === artifact.sha256)
+    )) ?? null
+
+    if (localMatch?.bytes) {
+      await downloadLocalArtifact(localMatch.bytes, artifact.outputName)
+      return
     }
 
-    setConverterStatus(`Preview ready: ${pkg.outputName}`)
-    appendLog(`Loaded ${pkg.outputName} from bytes`)
-    playDirectEffect(effect, 'converted-preview', pkg.outputName)
-  }, [appendLog, clearConvertedRegistration, playDirectEffect])
-
-  useEffect(() => {
-    const input = depsInputRef.current
-    if (!input) return
-    input.setAttribute('webkitdirectory', '')
-    input.setAttribute('directory', '')
-  }, [])
+    try {
+      setLoadingMessage(`Preparing download: ${artifact.outputName}`)
+      const loaded = await loadAccountArtifactBytes(artifact.artifactId)
+      const bytes = loaded.bytes
+      const resolvedSha256 = loaded.sha256 || artifact.sha256 || await sha256Hex(bytes)
+      upsertLocalConvertedPackage({
+        artifactId: artifact.artifactId,
+        alreadyExisted: true,
+        bytes,
+        outputName: artifact.outputName,
+        mainEffectPath: artifact.outputName,
+        bytesLength: bytes.byteLength,
+        sha256: resolvedSha256,
+        status: 'completed',
+        artifactSha256: resolvedSha256,
+        artifactBytesLength: bytes.byteLength,
+        sourceKind: 'converted',
+        dependencyFiles: [],
+      })
+      await downloadLocalArtifact(bytes, artifact.outputName)
+    } finally {
+      setLoadingMessage('')
+    }
+  }, [
+    convertedList,
+    downloadLocalArtifact,
+    loadAccountArtifactBytes,
+    upsertLocalConvertedPackage,
+  ])
 
   useEffect(() => {
     if (cubeRef.current) {
@@ -779,7 +1755,11 @@ export default function EffekseerConverterCanvas() {
   useEffect(() => {
     const grid = gridRef.current
     if (grid) grid.visible = showGrid
-  }, [showGrid])
+    const axesHelper = axesHelperRef.current
+    if (axesHelper) axesHelper.visible = showGrid && viewMode === '3d'
+    const xyAxesGizmo = xyAxesGizmoRef.current
+    if (xyAxesGizmo) xyAxesGizmo.visible = showGrid && viewMode === 'xy'
+  }, [showGrid, viewMode])
 
   useEffect(() => {
     const floor = floorRef.current
@@ -808,12 +1788,23 @@ export default function EffekseerConverterCanvas() {
     }
   }, [floorColor])
 
-  const resetView = useCallback(() => {
+  useEffect(() => {
+    const camera = cameraRef.current
     const controls = controlsRef.current
-    if (controls) {
-      controls.target.set(0, 1, 0)
-      controls.object.position.set(9, 4.5, 9)
-      controls.update()
+    const grid = gridRef.current
+    const floor = floorRef.current
+    if (!camera || !controls || !grid || !floor) return
+
+    applySceneViewMode(camera, controls, grid, floor, viewMode)
+  }, [viewMode])
+
+  const resetView = useCallback(() => {
+    const camera = cameraRef.current
+    const controls = controlsRef.current
+    const grid = gridRef.current
+    const floor = floorRef.current
+    if (camera && controls && grid && floor) {
+      applySceneViewMode(camera, controls, grid, floor, viewMode)
     }
     setShowSceneCube(false)
     setShowGrid(true)
@@ -821,7 +1812,7 @@ export default function EffekseerConverterCanvas() {
     setBgColor('#000000')
     setGridColor('#ffffff')
     setFloorColor(DEFAULT_FLOOR_COLOR)
-  }, [])
+  }, [viewMode])
 
   const queueRuntimeConfigReload = useCallback((nextConfig: RuntimeConfig) => {
     const normalized = normalizeRuntimeConfig(nextConfig)
@@ -914,12 +1905,11 @@ export default function EffekseerConverterCanvas() {
 
   useEffect(() => {
     const canvas = canvasRef.current
-    const effekseer = window.effekseer
-    if (!canvas || !('gpu' in navigator) || !effekseer) {
-      setError('WebGPU runtime scripts are not available in this page.')
+    if (!canvas || !('gpu' in navigator)) {
+      setError('WebGPU is not available in this page.')
       return
     }
-    const effekseerApi = effekseer
+    let effekseerApi = window.effekseer
 
     let cancelled = false
     let frame = 0
@@ -931,15 +1921,11 @@ export default function EffekseerConverterCanvas() {
     sceneRef.current = scene
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100)
-    camera.position.set(9, 4.5, 9)
-    camera.up.set(0, 1, 0)
-    camera.lookAt(0, 1, 0)
+    cameraRef.current = camera
 
     const controls = new OrbitControls(camera, canvas)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
-    controls.target.set(0, 1, 0)
-    controls.update()
 
     const grid = new THREE.GridHelper(20, 10, gridColor, gridColor)
     if (!Array.isArray(grid.material)) {
@@ -947,6 +1933,16 @@ export default function EffekseerConverterCanvas() {
       grid.material.color.set(gridColor)
       grid.material.needsUpdate = true
     }
+    const axesHelper = new THREE.AxesHelper(2.5)
+    if (!Array.isArray(axesHelper.material)) {
+      axesHelper.material.depthTest = false
+      axesHelper.material.toneMapped = false
+      axesHelper.material.transparent = true
+    }
+    axesHelper.renderOrder = 1
+    axesHelper.visible = showGrid && viewMode === '3d'
+    const xyAxesGizmo = createXYAxesGizmo(2.5)
+    xyAxesGizmo.visible = showGrid && viewMode === 'xy'
     const floorGeometry = new THREE.PlaneGeometry(24, 24)
     const floorMaterial = new THREE.MeshBasicMaterial({
       color: floorColor,
@@ -962,9 +1958,12 @@ export default function EffekseerConverterCanvas() {
     cube.visible = showSceneCube
     cubeRef.current = cube
     gridRef.current = grid
+    axesHelperRef.current = axesHelper
+    xyAxesGizmoRef.current = xyAxesGizmo
     floorRef.current = floor
     controlsRef.current = controls
-    scene.add(floor, grid, cube)
+    applySceneViewMode(camera, controls, grid, floor, viewMode)
+    scene.add(floor, grid, axesHelper, xyAxesGizmo, cube)
 
     let renderer: THREE.WebGPURenderer | null = null
 
@@ -989,7 +1988,9 @@ export default function EffekseerConverterCanvas() {
       if (cancelled) return
 
       const pass = runtimeRef.current.pass
-      if (!pass) return
+      if (!pass) {
+        return
+      }
 
       const handle = runtimeRef.current.handle
       const handleAlive = isHandleAlive(handle)
@@ -999,12 +2000,13 @@ export default function EffekseerConverterCanvas() {
       }
 
       timer.update(time)
+      const deltaFrames = Math.max(0, timer.getDelta() * 60)
       if (cube.visible) {
         cube.rotation.y += 0.01
         cube.rotation.z += 0.01
       }
       controls.update()
-      pass.render(Math.max(0, timer.getDelta() * 60))
+      pass.render(deltaFrames)
 
       if (showStatsRef.current) {
         const stats = cpuStatsRef.current
@@ -1063,6 +2065,34 @@ export default function EffekseerConverterCanvas() {
       grid.material.dispose()
     }
 
+    const disposeAxesHelper = () => {
+      axesHelper.geometry.dispose()
+      if (Array.isArray(axesHelper.material)) {
+        for (const entry of axesHelper.material) {
+          entry.dispose()
+        }
+        return
+      }
+      axesHelper.material.dispose()
+    }
+
+    const disposeXYAxesGizmo = () => {
+      xyAxesGizmo.traverse((child) => {
+        const meshChild = child as THREE.Object3D & {
+          geometry?: THREE.BufferGeometry
+          material?: THREE.Material | THREE.Material[]
+        }
+        meshChild.geometry?.dispose()
+        if (Array.isArray(meshChild.material)) {
+          for (const entry of meshChild.material) {
+            entry.dispose()
+          }
+        } else {
+          meshChild.material?.dispose()
+        }
+      })
+    }
+
     const disposeFloor = () => {
       floorGeometry.dispose()
       floorMaterial.dispose()
@@ -1079,16 +2109,23 @@ export default function EffekseerConverterCanvas() {
       const runtime = runtimeRef.current
       runtime.handle?.stop()
       runtime.ctx?.stopAll()
-      effekseerApi.releaseContext(runtime.ctx)
+      const runtimeApi = effekseerApi ?? window.effekseer
+      runtimeApi?.releaseContext?.(runtime.ctx)
       runtime.pass?.dispose()
       geometry.dispose()
       material.dispose()
       disposeGrid()
+      disposeAxesHelper()
+      disposeXYAxesGizmo()
       disposeFloor()
       controls.dispose()
       renderer?.dispose()
       timer.dispose()
+      cameraRef.current = null
       cubeRef.current = null
+      gridRef.current = null
+      axesHelperRef.current = null
+      xyAxesGizmoRef.current = null
       floorRef.current = null
 
       runtimeRef.current = createRuntimeState()
@@ -1098,7 +2135,12 @@ export default function EffekseerConverterCanvas() {
 
     void (async () => {
       try {
-        appendLog('Creating WebGPU renderer.')
+        await ensureEffekseerRuntimeLoaded()
+        effekseerApi = window.effekseer
+        if (!effekseerApi) {
+          throw new Error(`Effekseer runtime scripts are not available from ${EFFEKSEER_RUNTIME_BASE}`)
+        }
+
         const device = await requestSharedWebGPUDevice()
         renderer = new THREE.WebGPURenderer({
           canvas,
@@ -1107,23 +2149,24 @@ export default function EffekseerConverterCanvas() {
           outputBufferType: runtimeConfigApplied.hdrOutput ? THREE.HalfFloatType : THREE.UnsignedByteType,
           device,
         })
-        runtimeRef.current = {
-          ...runtimeRef.current,
-          renderer,
+      runtimeRef.current = {
+        ...runtimeRef.current,
+        renderer,
         }
         await renderer.init()
+        renderer.outputColorSpace = runtimeConfigApplied.outputColorSpace === 'linear'
+          ? THREE.LinearSRGBColorSpace
+          : THREE.SRGBColorSpace
         if (cancelled) {
           cleanup()
           return
         }
 
-        appendLog('Initializing Effekseer runtime.')
         if (!effekseerRuntimeInitialized) {
           effekseerApi.setWebGPUDevice(device)
-          await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+          await effekseerApi.initRuntime(EFFEKSEER_RUNTIME_WASM_URL)
           ;(effekseerApi as unknown as { setLogEnabled?: (flag: boolean) => void }).setLogEnabled?.(true)
           effekseerRuntimeInitialized = true
-          appendLog('Effekseer runtime native log enabled.')
         }
         if (cancelled) {
           cleanup()
@@ -1160,12 +2203,8 @@ export default function EffekseerConverterCanvas() {
           pass,
         }
 
-        if (hasManagedEffectsApi(ctx)) {
-          appendLog('Registering built-in .efkwgpk samples.')
-          ctx.registerEffects(BUILTIN_REGISTRY)
-        } else {
-          appendLog('Managed registry API not available; using direct loadEffect() mode for built-ins.')
-        }
+        // Samples are loaded on-demand via loadEffect(path/bytes). Do not pre-register,
+        // because failed managed preloads can poison the internal effect cache.
         resize()
         setRuntimeReady(true)
         setConverterStatus('Runtime ready. Choose a built-in sample or load a converted package.')
@@ -1175,13 +2214,12 @@ export default function EffekseerConverterCanvas() {
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         setError(message)
-        appendLog(message)
         cleanup()
       }
     })()
 
     return cleanup
-  }, [appendLog, clearConvertedRegistration, playRegisteredEffect, releaseBuiltInEffects, runtimeConfigApplied])
+  }, [clearConvertedRegistration, playRegisteredEffect, releaseBuiltInEffects, runtimeConfigApplied])
 
   const selectSample = useCallback((effectId: string) => {
     void playRegisteredEffect(effectId)
@@ -1201,14 +2239,12 @@ export default function EffekseerConverterCanvas() {
     if (playback === 'playing' && isHandleAlive(handle) && handle?.setPaused) {
       handle.setPaused(true)
       setPlayback('paused')
-      appendLog('Paused current effect.')
       return
     }
 
     if (playback === 'paused' && isHandleAlive(handle) && handle?.setPaused) {
       handle.setPaused(false)
       setPlayback('playing')
-      appendLog('Resumed current effect.')
       return
     }
 
@@ -1218,7 +2254,7 @@ export default function EffekseerConverterCanvas() {
     }
 
     void playRegisteredEffect(runtime.activeEffectId)
-  }, [appendLog, convertedPackage?.outputName, playback, playDirectEffect, playRegisteredEffect])
+  }, [convertedPackage?.outputName, playback, playDirectEffect, playRegisteredEffect])
 
   const replayEffect = useCallback(() => {
     const runtime = runtimeRef.current
@@ -1237,8 +2273,7 @@ export default function EffekseerConverterCanvas() {
     runtime.ctx?.stopAll()
     runtime.handle = null
     setPlayback('stopped')
-    appendLog('Stopped all effect playback.')
-  }, [appendLog])
+  }, [])
 
   const playNext = useCallback(() => {
     if (activeEffectId === 'converted-preview' && convertedPackage) {
@@ -1264,62 +2299,196 @@ export default function EffekseerConverterCanvas() {
       return
     }
     handle.sendTrigger(index)
-    appendLog(`Trigger ${index} sent.`)
-  }, [appendLog])
-
-  const openDepsPicker = useCallback(() => {
-    const input = depsInputRef.current
-    if (!input) return
-    input.value = ''
-    input.click()
   }, [])
 
-  const requestDepsFolder = useCallback((sourceName: string, options?: { openPicker?: boolean }) => {
-    setDepsPromptSource(sourceName)
-    setShowDepsPrompt(true)
+  const promptDependencyFolderViaInput = useCallback((source: File): Promise<DependencyImportFile[]> => {
+    const input = depsInputRef.current
+    if (!input) {
+      return Promise.resolve([])
+    }
+
+    input.value = ''
+
+    return new Promise((resolve) => {
+      let settled = false
+
+      const finish = (entries: DependencyImportFile[]) => {
+        if (settled) return
+        settled = true
+        window.removeEventListener('focus', handleFocus)
+        input.removeEventListener('change', handleChange)
+        resolve(filterDependencyImportFiles(source, entries))
+      }
+
+      const handleChange = () => {
+        const entries = Array.from(input.files ?? []).map((file) => ({
+          file,
+          relativePath: normalizeDependencyRelativePath((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name),
+        }))
+        finish(entries)
+      }
+
+      const handleFocus = () => {
+        window.setTimeout(() => finish([]), 0)
+      }
+
+      input.addEventListener('change', handleChange)
+      window.addEventListener('focus', handleFocus, { once: true })
+      input.click()
+    })
+  }, [])
+
+  const promptDependencyFolder = useCallback(async (source: File, token: number) => {
+    let nextDependencyFiles: DependencyImportFile[] = []
+
+    try {
+      const pickerWindow = window as DirectoryPickerWindow
+      if (typeof pickerWindow.showDirectoryPicker === 'function') {
+        const directory = await pickerWindow.showDirectoryPicker({
+          mode: 'read',
+          id: SOURCE_PICKER_ID,
+          startIn: sourceHandleRef.current ?? 'documents',
+        })
+        nextDependencyFiles = filterDependencyImportFiles(source, await collectDependencyFilesFromDirectory(directory))
+      } else {
+        nextDependencyFiles = await promptDependencyFolderViaInput(source)
+      }
+    } catch (cause) {
+      const errorName = cause instanceof DOMException ? cause.name : ''
+      if (errorName !== 'AbortError') {
+        throw cause
+      }
+      nextDependencyFiles = []
+    }
+
+    if (dependencyPromptTokenRef.current !== token) {
+      return
+    }
+
+    setDependencyFiles(nextDependencyFiles)
+    setConverterStatus(
+      nextDependencyFiles.length > 0
+        ? `Source: ${source.name} + ${nextDependencyFiles.length} dependency files`
+        : `Source: ${source.name}`
+    )
+    setPendingAutoConvert(true)
+  }, [promptDependencyFolderViaInput])
+
+  const beginSourceImport = useCallback(async (nextFile: File | null, sourceHandle: FileSystemFileHandleLike | null = null) => {
+    sourceHandleRef.current = sourceHandle
+    if (nextFile && !isSupportedImportSource(nextFile.name)) {
+      dependencyPromptTokenRef.current += 1
+      setSourceFile(null)
+      setConvertedPackage(null)
+      setDependencyFiles([])
+      setPendingAutoConvert(false)
+      setLoadingMessage('')
+      setError('Only .efkefc, .efkpkg, .efkwg, or .efkwgpk sources are supported.')
+      setConverterStatus('Choose .efkefc, .efkpkg, .efkwg, or .efkwgpk')
+      if (sourceInputRef.current) {
+        sourceInputRef.current.value = ''
+      }
+      return
+    }
+
+    if (
+      nextFile &&
+      !isDirectViewerSource(nextFile.name) &&
+      !authUser &&
+      !usesLocalStartEffectConversion()
+    ) {
+      openSignInPrompt('You must sign in with Google before importing effects.')
+      dependencyPromptTokenRef.current += 1
+      setSourceFile(null)
+      setConvertedPackage(null)
+      setDependencyFiles([])
+      setPendingAutoConvert(false)
+      setLoadingMessage('')
+      setError('')
+      setConverterStatus('Sign in to import and store locked artifacts.')
+      if (sourceInputRef.current) {
+        sourceInputRef.current.value = ''
+      }
+      return
+    }
+
+    const nextToken = dependencyPromptTokenRef.current + 1
+    dependencyPromptTokenRef.current = nextToken
+    setSourceFile(nextFile)
+    setConvertedPackage(null)
+    setDependencyFiles([])
+    setPendingAutoConvert(false)
+    setConverterStatus(nextFile ? `Source: ${nextFile.name}` : 'Choose a source effect first.')
     setLoadingMessage('')
     setError('')
-    setConverterStatus(`"${sourceName}" requires a dependency folder (Texture/Model/Material/Sound).`)
-    appendLog(`Dependency folder required for ${sourceName}.`)
-    if (options?.openPicker) {
-      openDepsPicker()
+
+    if (!nextFile) {
+      return
     }
-  }, [appendLog, openDepsPicker])
+
+    if (!requiresDependencyFolderPrompt(nextFile.name)) {
+      setPendingAutoConvert(true)
+      return
+    }
+
+    setConverterStatus(`Source: ${nextFile.name}. Select a dependency folder or cancel to continue.`)
+    void promptDependencyFolder(nextFile, nextToken).catch((cause) => {
+      if (dependencyPromptTokenRef.current !== nextToken) {
+        return
+      }
+      const message = cause instanceof Error ? cause.message : String(cause)
+      setError(message)
+      setConverterStatus(message)
+      setPendingAutoConvert(true)
+    })
+  }, [authUser, openSignInPrompt, promptDependencyFolder])
+
+  const openSourcePicker = useCallback(async () => {
+    const pickerWindow = window as DirectoryPickerWindow
+    if (typeof pickerWindow.showOpenFilePicker === 'function') {
+      try {
+        const handles = await pickerWindow.showOpenFilePicker({
+          id: SOURCE_PICKER_ID,
+          multiple: false,
+          excludeAcceptAllOption: false,
+          types: [
+            {
+              description: 'Effekseer effects',
+              accept: {
+                'application/octet-stream': ['.efkefc', '.efkpkg', '.efkwg', '.efkwgpk'],
+              },
+            },
+          ],
+        })
+        const handle = handles[0] ?? null
+        if (!handle) return
+        const file = await handle.getFile()
+        await beginSourceImport(file, handle)
+        return
+      } catch (cause) {
+        const errorName = cause instanceof DOMException ? cause.name : ''
+        if (errorName === 'AbortError') {
+          return
+        }
+        const message = cause instanceof Error ? cause.message : String(cause)
+        setError(message)
+        setConverterStatus(message)
+        return
+      }
+    }
+
+    sourceInputRef.current?.click()
+  }, [beginSourceImport])
 
   const handleSourceChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const nextFile = event.target.files?.[0] ?? null
-    setSourceFile(nextFile)
-    setDepsFiles([])
-    setConvertedPackage(null)
-    setPendingAutoConvert(false)
-    setConverterStatus(nextFile ? `Source: ${nextFile.name}` : 'Choose a source effect first.')
-    setShowDepsPrompt(false)
-    setDepsPromptSource('')
-    setLoadingMessage('')
-    setPendingAutoConvert(!!nextFile)
     if (sourceInputRef.current) {
       sourceInputRef.current.value = ''
     }
-  }, [])
+    void beginSourceImport(nextFile, null)
+  }, [beginSourceImport])
 
-  const handleDepsChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-    setDepsFiles(files)
-    if (files.length > 0) {
-      setShowDepsPrompt(false)
-      setLoadingMessage('')
-      setError('')
-      setConverterStatus(`Resources selected: ${files.length} files`)
-      appendLog(`Resources selected for ${sourceFile?.name ?? depsPromptSource}: ${files.length} files.`)
-      if (sourceFile && isEfkefcSource(sourceFile.name)) {
-        setPendingAutoConvert(true)
-      }
-    } else if (sourceFile) {
-      setConverterStatus(`Source: ${sourceFile.name}`)
-    }
-  }, [appendLog, depsPromptSource, sourceFile])
-
-  const runConvert = useCallback(async (options?: { autoLoad?: boolean }) => {
+  const runConvert = useCallback(async () => {
     if (!sourceFile) {
       setConverterStatus('Choose a source effect first.')
       return
@@ -1330,101 +2499,114 @@ export default function EffekseerConverterCanvas() {
     setLoadingMessage(`Loading package: ${sourceFile.name}`)
     setError('')
     setConverterStatus(`Loading ${sourceFile.name}...`)
-    appendLog(`Loading ${sourceFile.name}`)
 
     try {
-      const sourceBuffer = await sourceFile.arrayBuffer()
-      const extraFiles: ConverterInputFile[] = await Promise.all(
-        depsFiles.map(async (file) => ({
-          name: file.name,
-          relativePath: file.webkitRelativePath || file.name,
-          bytes: new Uint8Array(await file.arrayBuffer()),
-        }))
-      )
+      if (!isSupportedImportSource(sourceFile.name)) {
+        throw new Error('Only .efkefc, .efkpkg, .efkwg, or .efkwgpk sources are supported.')
+      }
 
-      const sourceExt = sourceFile.name.toLowerCase()
-      const canUseNative =
-        useNativeConverter &&
-        (sourceExt.endsWith('.efkefc') || sourceExt.endsWith('.efkpkg'))
+      const directViewerSource = isDirectViewerSource(sourceFile.name)
 
-      let result: ConvertedPackage
-      let backendTag = 'js'
-      let shouldPersistResult = true
-      if (canUseNative) {
-        try {
-          appendLog('Running native converter API.')
-          result = await convertToEfwgpkNative(sourceFile.name, sourceBuffer, extraFiles, {
-            injectMesh: injectMeshNative,
-          })
-          if (injectMeshNative && result.meshInjected !== true) {
-            throw new Error('Native conversion completed without watermark injection.')
-          }
-          backendTag = injectMeshNative
-            ? (result.meshInjected === false ? 'native-no-mesh' : 'native-mesh')
-            : 'native'
-          if (injectMeshNative) {
-            appendLog('Preview watermark injection confirmed.')
-          }
-        } catch (nativeCause) {
-          const nativeMessage = nativeCause instanceof Error ? nativeCause.message : String(nativeCause)
-          if (injectMeshNative) {
-            throw new Error(`Native mesh injection failed: ${nativeMessage}`)
-          }
-          appendLog(`Native converter failed, fallback to JS: ${nativeMessage}`)
-          result = await convertToEfwgpk(sourceFile.name, sourceBuffer, extraFiles)
-          backendTag = 'js-fallback'
+      if (!directViewerSource && !authUser && !usesLocalStartEffectConversion()) {
+        openSignInPrompt('You must sign in with Google before importing effects.')
+        setConverterStatus('Sign in to import and store locked artifacts.')
+        return
+      }
+
+      if (!directViewerSource && !usesLocalStartEffectConversion() && accountUser && !canAccountStartPreviewConversion(accountUser)) {
+        setError('')
+        setLoadingMessage('')
+        setConverterStatus(PREVIEW_CONVERSION_BLOCKED_MESSAGE)
+        setShowCreditPackModal(true)
+        return
+      }
+
+      setLoadingMessage(`Reading source: ${sourceFile.name}`)
+      const sourceBytes = new Uint8Array(await sourceFile.arrayBuffer())
+
+      if (directViewerSource) {
+        const sourceSha256 = await sha256Hex(sourceBytes)
+        const result: LocalConvertedPackage = {
+          artifactId: null,
+          alreadyExisted: false,
+          bytes: sourceBytes,
+          outputName: sourceFile.name,
+          mainEffectPath: sourceFile.name,
+          bytesLength: sourceBytes.byteLength,
+          sha256: sourceSha256,
+          status: 'completed',
+          artifactSha256: sourceSha256,
+          artifactBytesLength: sourceBytes.byteLength,
+          sourceKind: 'direct',
+          dependencyFiles: sourceFile.name.toLowerCase().endsWith('.efkwg') ? dependencyFiles : [],
         }
-      } else {
-        result = await convertToEfwgpk(sourceFile.name, sourceBuffer, extraFiles)
-      }
 
-      setConverterStatus(
-        `[${backendTag}] ${result.outputName}  ${result.entries} entries  ${(result.bytes.byteLength / 1024).toFixed(1)} KB  deps:${extraFiles.length}/${result.depsPacked}`
-      )
-      appendLog(
-        `Built ${result.outputName} entries=${result.entries} sizeKB=${(result.bytes.byteLength / 1024).toFixed(1)} deps=${extraFiles.length}/${result.depsPacked}`
-      )
-      if (result.backendRevision) {
-        appendLog(`Native backend revision: ${result.backendRevision}`)
-      }
-      const summary = summarizeEfwgpk(result.bytes)
-      if (summary) {
-        appendLog(
-          `Package assets: png=${summary.png} model=${summary.models} mat=${summary.materials} sound=${summary.sounds}`
-        )
-      }
-      if (options?.autoLoad !== false) {
-        try {
-          setLoadingMessage(`Loading effect preview: ${result.outputName}`)
-          await loadConvertedPreview(result)
-        } catch (previewCause) {
-          const previewMessage = previewCause instanceof Error ? previewCause.message : String(previewCause)
-          if (depsFiles.length === 0 && isEfkefcSource(sourceFile.name) && looksLikeMissingDependencyError(previewMessage)) {
-            shouldPersistResult = false
-            appendLog(`Preview requires dependency folder: ${previewMessage}`)
-            requestDepsFolder(sourceFile.name)
-          } else {
-            setError(previewMessage)
-            appendLog(previewMessage)
-          }
-        }
-      }
-      if (shouldPersistResult) {
+        setConverterStatus(`Loaded ${result.outputName} ${(result.artifactBytesLength / 1024).toFixed(1)} KB`)
         setConvertedPackage(result)
         setConvertedList((prev) => {
           const exists = prev.some((item) => item.outputName === result.outputName)
           if (exists) return prev.map((item) => item.outputName === result.outputName ? result : item)
           return [...prev, result]
         })
+
+        await loadConvertedPreview(result)
+        return
+      }
+
+      const extraFiles = []
+      if (dependencyFiles.length > 0) setLoadingMessage(`Reading dependencies: ${dependencyFiles.length}`)
+      if (!sourceFile.name.toLowerCase().endsWith('.efkefc')) {
+        for (const dependencyFile of dependencyFiles) {
+          extraFiles.push({
+            name: dependencyFile.file.name,
+            relativePath: dependencyFile.relativePath,
+            bytes: new Uint8Array(await dependencyFile.file.arrayBuffer()),
+          })
+        }
+      }
+
+      setLoadingMessage(`Converting source: ${sourceFile.name}`)
+      const conversion = await startEffectConversion({
+        sourceName: sourceFile.name,
+        sourceBytes,
+        extraFiles,
+      })
+
+      const result: LocalConvertedPackage = {
+        ...conversion,
+        bytes: conversion.bytes,
+        artifactId: conversion.artifactId ?? null,
+        artifactSha256: conversion.sha256,
+        artifactBytesLength: conversion.bytesLength,
+        sourceKind: 'converted',
+        dependencyFiles,
+      }
+
+      setConverterStatus(
+        result.artifactId
+          ? `${result.outputName} ready ${(result.artifactBytesLength / 1024).toFixed(1)} KB`
+          : `${result.outputName} preview ready ${(result.artifactBytesLength / 1024).toFixed(1)} KB`
+      )
+      upsertLocalConvertedPackage(result)
+
+      try {
+        await loadConvertedPreview(result)
+      } catch (previewError) {
+        const message = previewError instanceof Error ? previewError.message : String(previewError)
+        setError(message)
+        setConverterStatus(message)
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      appendLog(message)
-      if (depsFiles.length === 0 && isEfkefcSource(sourceFile.name) && looksLikeMissingDependencyError(message)) {
-        setConvertedPackage(null)
-        requestDepsFolder(sourceFile.name)
+      if (cause instanceof Error && cause.stack) {
+        console.error(cause.stack)
+      }
+      setConvertedPackage(null)
+      if (cause instanceof FunctionApiError && cause.code === 'preview_conversion_limit_reached') {
+        setError('')
+        setConverterStatus(PREVIEW_CONVERSION_BLOCKED_MESSAGE)
+        setShowCreditPackModal(true)
       } else {
-        setConvertedPackage(null)
         setError(message)
         setConverterStatus(message)
       }
@@ -1432,7 +2614,7 @@ export default function EffekseerConverterCanvas() {
       setLoadingMessage('')
       setConverting(false)
     }
-  }, [appendLog, converting, depsFiles, injectMeshNative, loadConvertedPreview, requestDepsFolder, sourceFile, useNativeConverter])
+  }, [accountUser, authUser, converting, dependencyFiles, loadConvertedPreview, openSignInPrompt, sourceFile, upsertLocalConvertedPackage])
 
   useEffect(() => {
     if (!pendingAutoConvert) return
@@ -1442,21 +2624,38 @@ export default function EffekseerConverterCanvas() {
     }
     if (converting) return
     setPendingAutoConvert(false)
-    void runConvert({ autoLoad: true })
-  }, [converting, depsFiles, pendingAutoConvert, runConvert, sourceFile])
+    void runConvert()
+  }, [converting, pendingAutoConvert, runConvert, sourceFile])
 
   const downloadConverted = useCallback(() => {
     if (!convertedPackage) return
-    const url = URL.createObjectURL(
-      new Blob([toArrayBuffer(convertedPackage.bytes)], { type: 'application/octet-stream' })
-    )
-    const link = document.createElement('a')
-    link.href = url
-    link.download = convertedPackage.outputName
-    link.click()
-    URL.revokeObjectURL(url)
-    appendLog(`Downloaded ${convertedPackage.outputName}`)
-  }, [appendLog, convertedPackage])
+    if (convertedPackage.sourceKind === 'direct') {
+      if (!(convertedPackage.bytes instanceof Uint8Array)) {
+        setError(`Local bytes are unavailable for ${convertedPackage.outputName}.`)
+        return
+      }
+      void downloadLocalArtifact(convertedPackage.bytes, convertedPackage.outputName)
+      return
+    }
+    const accountArtifact = convertedPackage.artifactId
+      ? accountArtifacts.find((artifact) => artifact.artifactId === convertedPackage.artifactId) ?? null
+      : convertedPackage.artifactSha256
+        ? accountArtifacts.find((artifact) => artifact.sha256 === convertedPackage.artifactSha256) ?? null
+        : null
+    if (accountArtifact?.unlockStatus === 'unlocked') {
+      void downloadUnlockedAccountArtifact(accountArtifact).catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        setError(message)
+        setConverterStatus(message)
+      })
+      return
+    }
+    setShowUnlockModal({
+      kind: 'session',
+      item: convertedPackage,
+      accountArtifact,
+    })
+  }, [accountArtifacts, convertedPackage, downloadLocalArtifact, downloadUnlockedAccountArtifact])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1500,51 +2699,75 @@ export default function EffekseerConverterCanvas() {
     }
   }, [])
 
-  const libraryEntries = convertedList
-  const unlockedLibraryEntries = libraryEntries.filter((item) => unlockedDownloads.has(item.outputName))
-  const loadedLibraryEntries = libraryEntries.filter((item) => !unlockedDownloads.has(item.outputName))
+  const credits = accountUser?.availableCredits ?? 0
+  const currentSessionEntries = convertedList.filter((item) => !accountArtifacts.some((artifact) => (
+    (!!item.artifactId && artifact.artifactId === item.artifactId) ||
+    (!!item.artifactSha256 && artifact.sha256 === item.artifactSha256)
+  )))
+  const purchasedAccountArtifacts = accountArtifacts.filter((artifact) => artifact.unlockStatus === 'unlocked')
+  const lockedAccountArtifacts = accountArtifacts.filter((artifact) => artifact.unlockStatus !== 'unlocked')
+  const libraryEntryCount = accountArtifacts.length + currentSessionEntries.length
   const pendingRuntimeChanges = pendingRuntimeConfig
     ? describeRuntimeConfigChanges(runtimeConfigApplied, pendingRuntimeConfig)
     : []
-  const renderLibraryItem = (item: ConvertedPackage, unlocked: boolean) => {
+  const renderSessionLibraryItem = (item: LocalConvertedPackage) => {
     const active = activeEffectId === 'converted-preview' && convertedPackage?.outputName === item.outputName
+    const matchingAccountArtifact = item.artifactId
+      ? accountArtifacts.find((artifact) => artifact.artifactId === item.artifactId) ?? null
+      : item.artifactSha256
+        ? accountArtifacts.find((artifact) => artifact.sha256 === item.artifactSha256) ?? null
+        : null
+    const displayName = item.outputName
     return (
       <div
         key={item.outputName}
-        className={`converted-item ${active ? 'active' : ''} ${unlocked ? 'library-item-unlocked' : ''}`}
+        className={`converted-item ${active ? 'active' : ''}`}
         onClick={() => {
           setConvertedPackage(item)
-          void loadConvertedPreview(item)
+          if (item.bytes) {
+            void loadConvertedPreview(item)
+            return
+          }
+          setConverterStatus(`Preview locked: ${item.outputName}`)
         }}
       >
-        <span className={`converted-name ${unlocked ? 'library-item-name-unlocked' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {unlocked ? (
-            <span className="library-item-effect-icon" aria-hidden="true">
-              <Sparkles size={12} strokeWidth={2} fill="currentColor" />
-            </span>
-          ) : null}
-          {(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring(0, (item.downloadOutputName || item.outputName).indexOf('.')) : (item.downloadOutputName || item.outputName)}
-          <span className="ext-label">{(item.downloadOutputName || item.outputName).includes('.') ? (item.downloadOutputName || item.outputName).substring((item.downloadOutputName || item.outputName).indexOf('.')) : ''}</span>
+        <span className="converted-name" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {displayName.includes('.') ? displayName.substring(0, displayName.indexOf('.')) : displayName}
+          <span className="ext-label">{displayName.includes('.') ? displayName.substring(displayName.indexOf('.')) : ''}</span>
         </span>
         <button
           type="button"
-          className={`converted-action ${unlocked ? 'unlocked' : 'locked'}`}
-          title={unlocked ? `Download ${item.downloadOutputName || item.outputName}` : `Unlock ${item.downloadOutputName || item.outputName}`}
+          className={`converted-action ${item.sourceKind === 'direct' || matchingAccountArtifact?.unlockStatus === 'unlocked' ? 'unlocked' : 'locked'}`}
+          title={
+            item.sourceKind === 'direct'
+              ? `Download ${item.outputName}`
+              : matchingAccountArtifact?.unlockStatus === 'unlocked'
+              ? `Download ${item.outputName}`
+              : `Unlock ${item.outputName}`
+          }
           onClick={(e) => {
             e.stopPropagation()
-            if (unlocked) {
-              const targetBytes = item.downloadBytes || item.bytes
-              const url = URL.createObjectURL(
-                new Blob([toArrayBuffer(targetBytes)], { type: 'application/octet-stream' })
-              )
-              const link = document.createElement('a')
-              link.href = url
-              link.download = item.downloadOutputName || item.outputName
-              link.click()
-              URL.revokeObjectURL(url)
-            } else {
-              setShowUnlockModal(item)
+            if (item.sourceKind === 'direct') {
+              if (!(item.bytes instanceof Uint8Array)) {
+                setError(`Local bytes are unavailable for ${item.outputName}.`)
+                return
+              }
+              void downloadLocalArtifact(item.bytes, item.outputName)
+              return
             }
+            if (matchingAccountArtifact?.unlockStatus === 'unlocked') {
+              void downloadUnlockedAccountArtifact(matchingAccountArtifact).catch((cause: unknown) => {
+                const message = cause instanceof Error ? cause.message : String(cause)
+                setError(message)
+                setConverterStatus(message)
+              })
+              return
+            }
+            setShowUnlockModal({
+              kind: 'session',
+              item,
+              accountArtifact: matchingAccountArtifact,
+            })
           }}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -1557,12 +2780,7 @@ export default function EffekseerConverterCanvas() {
           title={`Remove ${item.outputName}`}
           onClick={(e) => {
             e.stopPropagation()
-            setConvertedList((prev) => prev.filter((p) => p.outputName !== item.outputName))
-            if (convertedPackage?.outputName === item.outputName) {
-              setConvertedPackage(null)
-              clearConvertedRegistration()
-              setPlayback('stopped')
-            }
+            removeConvertedPackageByOutputName(item.outputName)
           }}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -1572,6 +2790,123 @@ export default function EffekseerConverterCanvas() {
       </div>
     )
   }
+
+  const renderAccountLibraryItem = (artifact: AccountArtifactRecord) => {
+    const localMatch = convertedList.find((item) => (
+      (!!item.artifactId && item.artifactId === artifact.artifactId) ||
+      (!!item.artifactSha256 && item.artifactSha256 === artifact.sha256)
+    )) ?? null
+    const active = !!localMatch && activeEffectId === 'converted-preview' && convertedPackage?.outputName === localMatch.outputName
+    const unlocked = artifact.unlockStatus === 'unlocked'
+
+    return (
+      <div
+        key={artifact.artifactId}
+        className={`converted-item ${active ? 'active' : ''} ${unlocked ? 'library-item-unlocked' : ''}`}
+        onClick={() => {
+          void loadAccountArtifactPreview(artifact).catch((cause: unknown) => {
+            const message = cause instanceof Error ? cause.message : String(cause)
+            setError(message)
+            setConverterStatus(message)
+          })
+        }}
+      >
+        <span className={`converted-name ${unlocked ? 'library-item-name-unlocked' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {unlocked ? (
+            <span className="library-item-effect-icon" aria-hidden="true">
+              <Sparkles size={12} strokeWidth={2} fill="currentColor" />
+            </span>
+          ) : null}
+          {artifact.displayName.includes('.') ? artifact.displayName.substring(0, artifact.displayName.indexOf('.')) : artifact.displayName}
+          <span className="ext-label">{artifact.displayName.includes('.') ? artifact.displayName.substring(artifact.displayName.indexOf('.')) : ''}</span>
+        </span>
+        <button
+          type="button"
+          className={`converted-action ${unlocked ? 'unlocked' : 'locked'}`}
+          title={unlocked ? `Download ${artifact.outputName}` : `Unlock ${artifact.outputName}`}
+          onClick={(event) => {
+            event.stopPropagation()
+            if (unlocked) {
+              void downloadUnlockedAccountArtifact(artifact).catch((cause: unknown) => {
+                const message = cause instanceof Error ? cause.message : String(cause)
+                setError(message)
+                setConverterStatus(message)
+              })
+              return
+            }
+            setShowUnlockModal({
+              kind: 'account',
+              artifact,
+            })
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 1v9m0 0L5 7m3 3l3-3M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="converted-action converted-remove"
+          title={`Delete ${artifact.outputName} from account library`}
+          onClick={(event) => {
+            event.stopPropagation()
+            setDeleteError('')
+            setShowDeleteArtifactModal({ artifact })
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </svg>
+        </button>
+      </div>
+    )
+  }
+  const unlockModalName = showUnlockModal
+    ? showUnlockModal.kind === 'session'
+      ? showUnlockModal.item.outputName
+      : showUnlockModal.artifact.outputName
+    : ''
+  const unlockModalAlreadyUnlocked = !!showUnlockModal && (
+    showUnlockModal.kind === 'account'
+      ? showUnlockModal.artifact.unlockStatus === 'unlocked'
+      : showUnlockModal.accountArtifact?.unlockStatus === 'unlocked'
+  )
+  const unlockModalRequiresSignIn = !!showUnlockModal && !authUser
+  const unlockModalRequiresCredits = !!showUnlockModal && !unlockModalRequiresSignIn && !unlockModalAlreadyUnlocked && (
+    credits < 1
+  )
+  const unlockPrimaryLabel = unlockModalRequiresSignIn
+    ? 'Sign In with Google'
+    : unlockModalAlreadyUnlocked
+      ? 'Download'
+      : 'Unlock & Download'
+  const renderCreditPackOptions = (target: UnlockTarget | null) => (
+    <div className="credit-pack-grid">
+      {CREDIT_PACKS.map((pack) => (
+        <div
+          key={pack.id}
+          className={`credit-pack-card ${pack.featured ? 'featured' : ''}`}
+        >
+          <div className="credit-pack-head">
+            <div>
+              <div className="credit-pack-label">{pack.label}</div>
+              <div className="credit-pack-amount">{pack.credits} Credits</div>
+            </div>
+            {pack.featured ? <span className="credit-pack-badge">Best Value</span> : null}
+          </div>
+          <div className="credit-pack-price">${pack.priceUsd}</div>
+          <button
+            type="button"
+            className="btn-primary credit-pack-btn"
+            disabled={checkoutPending}
+            onClick={() => void handleCreditPackPurchase(pack.id, target)}
+          >
+            {checkoutPending ? 'Redirecting...' : `Buy ${pack.credits} Credits`}
+          </button>
+        </div>
+      ))}
+    </div>
+  )
   return (
     <div className="app-root">
       <header className="app-header">
@@ -1585,7 +2920,7 @@ export default function EffekseerConverterCanvas() {
         {error ? <span className="header-error">{error}</span> : null}
 
         <div className="header-profile">
-          <div className="credit-pill" title="Current Balance">
+          <div className="credit-pill" title="Available Credits">
             <span className="coin-icon" style={{ display: 'inline-flex' }}>
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" color="#7aa2ff">
                 <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" fill="rgba(218,165,32,0.2)"/>
@@ -1597,7 +2932,14 @@ export default function EffekseerConverterCanvas() {
           <div ref={profileMenuRef} className="profile-dropdown-container">
             <button className="profile-btn" onClick={toggleProfileMenu}>
               <div className="avatar">
-                <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Max&backgroundColor=c0aede" alt="Profile" />
+                {accountUser?.photoURL || authUser?.photoURL ? (
+                  <img
+                    src={accountUser?.photoURL || authUser?.photoURL || ''}
+                    alt="Profile"
+                  />
+                ) : (
+                  <CircleUserRound size={24} strokeWidth={1.8} />
+                )}
               </div>
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
@@ -1605,10 +2947,20 @@ export default function EffekseerConverterCanvas() {
             </button>
             {showProfileMenu && (
               <div className="profile-menu">
-                <div className="menu-item" onClick={() => setShowProfileMenu(false)}>Buy Credits</div>
-                <div className="menu-item" onClick={() => setShowProfileMenu(false)}>Settings</div>
+                <div className="menu-item" onClick={() => setShowProfileMenu(false)}>
+                  {accountUser?.displayName || authUser?.displayName || 'Guest'}
+                </div>
+                <div className="menu-item" onClick={() => void handleOpenCreditPackModal()}>
+                  Buy Credits
+                </div>
                 <div className="menu-sep"></div>
-                <div className="menu-item" onClick={() => setShowProfileMenu(false)}>Sign Out</div>
+                {authUser ? (
+                  <div className="menu-item" onClick={() => void handleSignOut()}>Sign Out</div>
+                ) : (
+                  <div className="menu-item" onClick={() => void handleSignIn()}>
+                    Sign In with Google
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1622,7 +2974,7 @@ export default function EffekseerConverterCanvas() {
         >
           File
           <div className="menu-dropdown">
-            <button type="button" className="menu-action" onClick={() => sourceInputRef.current?.click()}>
+            <button type="button" className="menu-action" onClick={() => void openSourcePicker()}>
               <span>Import</span>
             </button>
             <div className="menu-sep" />
@@ -1639,6 +2991,13 @@ export default function EffekseerConverterCanvas() {
           <div className="menu-dropdown">
             <button type="button" className="menu-action" onClick={resetView}>
               <MenuCheckLabel label="Reset View" />
+            </button>
+            <div className="menu-sep" />
+            <button type="button" className="menu-action" onClick={() => setViewMode('3d')}>
+              <MenuCheckLabel label="3D View" checked={viewMode === '3d'} />
+            </button>
+            <button type="button" className="menu-action" onClick={() => setViewMode('xy')}>
+              <MenuCheckLabel label="2D View" checked={viewMode === 'xy'} />
             </button>
             <div className="menu-sep" />
             <button type="button" className="menu-action" onClick={() => setShowSceneCube((v) => !v)}>
@@ -1701,6 +3060,14 @@ export default function EffekseerConverterCanvas() {
             <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, hdrOutput: true })}>
               <MenuCheckLabel label="HDR" checked={runtimeConfigDraft.hdrOutput} />
             </button>
+            <div className="menu-sep" />
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, outputColorSpace: 'srgb' })}>
+              <MenuCheckLabel label="sRGB Color Space" checked={runtimeConfigDraft.outputColorSpace === 'srgb'} />
+            </button>
+            <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, outputColorSpace: 'linear' })}>
+              <MenuCheckLabel label="Linear Color Space" checked={runtimeConfigDraft.outputColorSpace === 'linear'} />
+            </button>
+            <div className="menu-sep" />
             <button type="button" className="menu-action" onClick={() => queueRuntimeConfigReload({ ...runtimeConfigDraft, antialias: !runtimeConfigDraft.antialias })}>
               <MenuCheckLabel label="Antialias" checked={runtimeConfigDraft.antialias} />
             </button>
@@ -1779,7 +3146,7 @@ export default function EffekseerConverterCanvas() {
         ref={sourceInputRef}
         className="hidden-input"
         type="file"
-        accept=".efkefc,.efkpkg,.efkwgpk"
+        accept=".efkefc,.efkpkg,.efkwg,.efkwgpk"
         onChange={handleSourceChange}
       />
       <input
@@ -1787,14 +3154,14 @@ export default function EffekseerConverterCanvas() {
         className="hidden-input"
         type="file"
         multiple
-        onChange={handleDepsChange}
+        {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
       />
 
       <div className="app-content">
         <div className="viewport">
           <canvas ref={canvasRef} className="render-canvas" />
 
-          {(converting || (!!loadingMessage && !showDepsPrompt)) ? (
+          {(converting || !!loadingMessage) ? (
             <div className="viewport-loading">
               <div className="convert-progress-title">
                 {loadingMessage || `Processing: ${sourceFile?.name || 'effect'}`}
@@ -1888,8 +3255,8 @@ export default function EffekseerConverterCanvas() {
               <span className="now-playing-label">
                 {activeEffectId === 'converted-preview' && convertedPackage ? (
                   <>
-                    {(convertedPackage.downloadOutputName || convertedPackage.outputName).includes('.') ? (convertedPackage.downloadOutputName || convertedPackage.outputName).substring(0, (convertedPackage.downloadOutputName || convertedPackage.outputName).indexOf('.')) : (convertedPackage.downloadOutputName || convertedPackage.outputName)}
-                    <span className="ext-label">{(convertedPackage.downloadOutputName || convertedPackage.outputName).includes('.') ? (convertedPackage.downloadOutputName || convertedPackage.outputName).substring((convertedPackage.downloadOutputName || convertedPackage.outputName).indexOf('.')) : ''}</span>
+                    {convertedPackage.outputName.includes('.') ? convertedPackage.outputName.substring(0, convertedPackage.outputName.indexOf('.')) : convertedPackage.outputName}
+                    <span className="ext-label">{convertedPackage.outputName.includes('.') ? convertedPackage.outputName.substring(convertedPackage.outputName.indexOf('.')) : ''}</span>
                   </>
                 ) : (
                   SAMPLE_EFFECTS.find((s) => s.id === activeEffectId)?.label || activeEffectId
@@ -1907,27 +3274,28 @@ export default function EffekseerConverterCanvas() {
                 </div>
                 <div>
                   <div className="library-panel-title">Library</div>
-                  <div className="library-panel-subtitle">All converted effects live here. Downloaded items are highlighted.</div>
+                  <div className="library-panel-subtitle">Account artifacts and current-session previews.</div>
                 </div>
               </div>
-              <div className="library-panel-count">{libraryEntries.length}</div>
+              <div className="library-panel-count">{libraryEntryCount}</div>
             </div>
-            {libraryEntries.length === 0 ? (
+            {libraryEntryCount === 0 ? (
               <div className="library-empty-state">
                 You do not have any library effects yet.
               </div>
             ) : (
               <div className="converted-list">
-                {unlockedLibraryEntries.length > 0 ? (
+                {purchasedAccountArtifacts.length > 0 || lockedAccountArtifacts.length > 0 ? (
                   <>
-                    <div className="library-section-label">Purchased</div>
-                    {unlockedLibraryEntries.map((item) => renderLibraryItem(item, true))}
+                    <div className="library-section-label">Account Library</div>
+                    {purchasedAccountArtifacts.map((artifact) => renderAccountLibraryItem(artifact))}
+                    {lockedAccountArtifacts.map((artifact) => renderAccountLibraryItem(artifact))}
                   </>
                 ) : null}
-                {loadedLibraryEntries.length > 0 ? (
+                {currentSessionEntries.length > 0 ? (
                   <>
-                    <div className="library-section-label">Downloaded</div>
-                    {loadedLibraryEntries.map((item) => renderLibraryItem(item, false))}
+                    <div className="library-section-label">Current Session</div>
+                    {currentSessionEntries.map((item) => renderSessionLibraryItem(item))}
                   </>
                 ) : null}
               </div>
@@ -1997,37 +3365,6 @@ export default function EffekseerConverterCanvas() {
         </div>
       ) : null}
 
-      {showDepsPrompt ? (
-        <div
-          className="deps-modal-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Select dependency folder"
-          onClick={openDepsPicker}
-        >
-          <div className="deps-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="deps-modal-title">
-              Dependency Folder Required: {depsPromptSource || sourceFile?.name || 'effect'}
-            </div>
-            <div className="deps-modal-copy">
-              This effect references external resources. Choose the folder that contains its textures, models, materials, or sounds.
-            </div>
-            <div className="convert-progress-bar" aria-hidden="true">
-              <span />
-            </div>
-            <div className="deps-modal-actions">
-              <button
-                type="button"
-                className="conv-btn primary"
-                onClick={openDepsPicker}
-              >
-                Choose Dependency Folder
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {/* Unlock Confirmation Modal */}
       {showUnlockModal && (
         <div className="modal-overlay" onClick={() => setShowUnlockModal(null)}>
@@ -2037,7 +3374,11 @@ export default function EffekseerConverterCanvas() {
               <button className="modal-close" onClick={() => setShowUnlockModal(null)}>×</button>
             </div>
             <div className="modal-body">
-              <p>You are about to unlock the pure, web-ready version of <strong>{showUnlockModal.downloadOutputName || showUnlockModal.outputName}</strong>.</p>
+              <p>
+                {unlockModalAlreadyUnlocked
+                  ? <>Download your unlocked copy of <strong>{unlockModalName}</strong>.</>
+                  : <>Unlock the permanent account download for <strong>{unlockModalName}</strong>.</>}
+              </p>
               
               <div className="modal-cost-box">
                 <span className="cost-label">Cost:</span>
@@ -2046,7 +3387,7 @@ export default function EffekseerConverterCanvas() {
                     <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" fill="rgba(218,165,32,0.2)"/>
                     <path d="M8 4V12M6 6H10M6 10H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                   </svg>
-                  -1
+                  {unlockModalAlreadyUnlocked ? '0' : '1'}
                 </span>
               </div>
               
@@ -2054,36 +3395,142 @@ export default function EffekseerConverterCanvas() {
                 You have <strong>{credits}</strong> credits remaining.
               </div>
 
-              {credits < 1 && (
-                <div className="modal-error">Not enough credits! Please purchase more to unlock.</div>
-              )}
+              {unlockModalRequiresSignIn ? (
+                <div className="modal-error">Sign in with Google to continue with credit-based unlocks.</div>
+              ) : null}
+              {unlockModalRequiresCredits ? (
+                <>
+                  <div className="modal-error">You need at least 1 credit to unlock this download.</div>
+                  {renderCreditPackOptions(showUnlockModal)}
+                </>
+              ) : null}
             </div>
             <div className="modal-footer">
               <button className="btn-secondary" onClick={() => setShowUnlockModal(null)}>Cancel</button>
-              <button 
-                className="btn-primary" 
-                disabled={credits < 1}
+              {!unlockModalRequiresCredits ? (
+                <button
+                  className="btn-primary"
+                  disabled={checkoutPending}
+                  onClick={() => void handleUnlockDownload(showUnlockModal)}
+                >
+                  {checkoutPending ? 'Redirecting...' : unlockPrimaryLabel}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCreditPackModal && (
+        <div className="modal-overlay" onClick={() => setShowCreditPackModal(false)}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Buy Credits</h2>
+              <button className="modal-close" onClick={() => setShowCreditPackModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>Buy credits once and spend them whenever you want. Unlocks remain permanent.</p>
+              <p>To continue previewing converted effects, purchase a credit pack.</p>
+              <div className="modal-balance">
+                You currently have <strong>{credits}</strong> credits available.
+              </div>
+              {renderCreditPackOptions(null)}
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowCreditPackModal(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSignInPromptModal && (
+        <div className="modal-overlay" onClick={() => {
+          if (signInPending) return
+          setShowSignInPromptModal(false)
+        }}>
+          <div className="modal-content sign-in-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Sign In Required</h2>
+              <button
+                className="modal-close"
                 onClick={() => {
-                  if (credits >= 1) {
-                    setCredits(c => c - 1)
-                    setUnlockedDownloads(prev => new Set([...prev, showUnlockModal.outputName]))
-                    
-                    // Auto-download after unlocking
-                    const targetBytes = showUnlockModal.downloadBytes || showUnlockModal.bytes
-                    const url = URL.createObjectURL(
-                      new Blob([toArrayBuffer(targetBytes)], { type: 'application/octet-stream' })
-                    )
-                    const link = document.createElement('a')
-                    link.href = url
-                    link.download = showUnlockModal.downloadOutputName || showUnlockModal.outputName
-                    link.click()
-                    URL.revokeObjectURL(url)
-                    
-                    setShowUnlockModal(null)
-                  }
+                  if (signInPending) return
+                  setShowSignInPromptModal(false)
                 }}
               >
-                Unlock & Download
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>{signInPromptMessage}</p>
+              <p className="sign-in-modal-note">Use your Google account to continue.</p>
+            </div>
+            <div className="modal-footer sign-in-modal-footer">
+              <button
+                type="button"
+                className="google-signin-btn"
+                disabled={signInPending}
+                onClick={() => void handleGooglePromptSignIn()}
+              >
+                <span className="google-signin-icon" aria-hidden="true">
+                  <svg viewBox="0 0 18 18" width="18" height="18">
+                    <path fill="#EA4335" d="M9 7.2v3.6h5c-.22 1.16-.9 2.14-1.94 2.8l2.9 2.25c1.69-1.56 2.67-3.86 2.67-6.59 0-.61-.05-1.2-.16-1.77H9z"/>
+                    <path fill="#34A853" d="M9 17.5c2.43 0 4.47-.8 5.96-2.19l-2.9-2.25c-.8.54-1.83.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.95v2.33A9 9 0 0 0 9 17.5z"/>
+                    <path fill="#4A90E2" d="M3.95 10.2A5.41 5.41 0 0 1 3.67 9c0-.41.1-.81.28-1.2V5.47H.95A9 9 0 0 0 0 9c0 1.45.35 2.82.95 4.03l3-2.33z"/>
+                    <path fill="#FBBC05" d="M9 4.08c1.32 0 2.5.45 3.43 1.33l2.57-2.57C13.46 1.4 11.43.5 9 .5A9 9 0 0 0 .95 5.47l3 2.33C4.66 5.67 6.65 4.08 9 4.08z"/>
+                  </svg>
+                </span>
+                <span>{signInPending ? 'Opening Google...' : 'Continue with Google'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteArtifactModal && (
+        <div className="modal-overlay" onClick={() => {
+          if (deletePending) return
+          setShowDeleteArtifactModal(null)
+          setDeleteError('')
+        }}>
+          <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Delete Library Effect?</h2>
+              <button
+                className="modal-close"
+                onClick={() => {
+                  if (deletePending) return
+                  setShowDeleteArtifactModal(null)
+                  setDeleteError('')
+                }}
+              >
+                x
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                Delete <strong>{showDeleteArtifactModal.artifact.outputName}</strong> from your account library?
+              </p>
+              <p>This removes the stored premium download from your account library. This action cannot be undone.</p>
+              {deleteError ? <div className="modal-error">{deleteError}</div> : null}
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  if (deletePending) return
+                  setShowDeleteArtifactModal(null)
+                  setDeleteError('')
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-danger"
+                disabled={deletePending}
+                onClick={() => void handleConfirmDeleteArtifact()}
+              >
+                {deletePending ? 'Deleting...' : 'Delete Effect'}
               </button>
             </div>
           </div>

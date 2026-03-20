@@ -4,6 +4,7 @@ import {
   EffekseerRenderPass,
   type EffekseerHandle,
 } from 'three-effekseer'
+import { EFFEKSEER_RUNTIME_WASM_URL, ensureEffekseerRuntimeLoaded } from './lib/effekseerRuntime'
 
 type WebGPUBackendWithDevice = {
   device: GPUDevice | null
@@ -17,11 +18,14 @@ const isHandleAlive = (value: EffekseerHandle | null): boolean => {
 
 async function main(): Promise<void> {
   const canvas = document.getElementById('viewer-canvas')
-  // Effekseer runtime loaded by the page scripts.
-  const effekseer = window.effekseer
 
-  if (!(canvas instanceof HTMLCanvasElement) || !('gpu' in navigator) || !effekseer) return
-  const effekseerApi = effekseer
+  if (!(canvas instanceof HTMLCanvasElement) || !('gpu' in navigator)) return
+  await ensureEffekseerRuntimeLoaded()
+
+  const effekseerApi = window.effekseer
+  if (!effekseerApi) {
+    throw new Error('vanilla-main: Effekseer runtime did not initialize.')
+  }
 
   let cancelled = false
   let handle: EffekseerHandle | null = null
@@ -73,7 +77,7 @@ async function main(): Promise<void> {
   // Give Effekseer the GPUDevice created by Three.
   effekseerApi.setWebGPUDevice(device)
   // Load and initialize the WebAssembly runtime.
-  await effekseerApi.initRuntime('/effekseer-runtime/Effekseer_WebGPU_Runtime.wasm')
+  await effekseerApi.initRuntime(EFFEKSEER_RUNTIME_WASM_URL)
   if (cancelled) return
 
   // Create a context
