@@ -5,31 +5,25 @@ import { copyFile, mkdir, readFile, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
-const STAGING_RUNTIME_DIR = fileURLToPath(
-  new URL('../../../../_staging_webgpu_copy/build_clean_ninja/Examples/WebGPU/', import.meta.url)
-)
-const STAGING_WRAPPER_FILE = fileURLToPath(
-  new URL('../../../../_staging_webgpu_copy/Effekseer/Examples/WebGPU/effekseer.webgpu.src.js', import.meta.url)
-)
 const EXAMPLES_WEBGPU_DIR = fileURLToPath(
   new URL('../', import.meta.url)
 )
 const PUBLIC_RUNTIME_DIR = fileURLToPath(
   new URL('./public/effekseer-runtime/', import.meta.url)
 )
-const DEFAULT_RUNTIME_DIR = existsSync(STAGING_RUNTIME_DIR)
-  ? STAGING_RUNTIME_DIR
-  : PUBLIC_RUNTIME_DIR
+const PUBLIC_WRAPPER_FILE = fileURLToPath(
+  new URL('./public/effekseer-runtime/effekseer.webgpu.src.js', import.meta.url)
+)
 
 const EFFEKSEER_RUNTIME_DIR = process.env.EFFEKSEER_RUNTIME_DIR
   ? path.resolve(process.env.EFFEKSEER_RUNTIME_DIR)
-  : DEFAULT_RUNTIME_DIR
+  : PUBLIC_RUNTIME_DIR
 const EFFEKSEER_WRAPPER_FILE = process.env.EFFEKSEER_WRAPPER_FILE
   ? path.resolve(process.env.EFFEKSEER_WRAPPER_FILE)
-  : STAGING_WRAPPER_FILE
+  : PUBLIC_WRAPPER_FILE
 const EFFEKSEER_FFLATE_FILE = existsSync(path.join(EFFEKSEER_RUNTIME_DIR, 'fflate.umd.js'))
   ? path.join(EFFEKSEER_RUNTIME_DIR, 'fflate.umd.js')
-  : path.join(EXAMPLES_WEBGPU_DIR, 'fflate.umd.js')
+  : path.join(PUBLIC_RUNTIME_DIR, 'fflate.umd.js')
 
 const PROJECT_ROOT_DIR = fileURLToPath(
   new URL('./', import.meta.url)
